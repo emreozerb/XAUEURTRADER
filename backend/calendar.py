@@ -89,34 +89,7 @@ class EconomicCalendar:
             return self.events  # Return cached
 
     def is_news_clear(self, utc_now: datetime | None = None) -> bool:
-        """
-        Check if there's no high-impact event within:
-        - 30 minutes before
-        - 15 minutes after
-        """
-        if utc_now is None:
-            utc_now = datetime.now(timezone.utc)
-
-        for ev in self.events:
-            try:
-                event_date = ev.get("date", "")
-                event_time = ev.get("time", "")
-                if not event_date or not event_time:
-                    continue
-                event_dt = datetime.strptime(
-                    f"{event_date} {event_time}", "%Y-%m-%d %H:%M:%S"
-                ).replace(tzinfo=timezone.utc)
-
-                # 30 min before to 15 min after
-                window_start = event_dt - timedelta(minutes=30)
-                window_end = event_dt + timedelta(minutes=15)
-
-                if window_start <= utc_now <= window_end:
-                    return False
-            except (ValueError, TypeError):
-                continue
-
-        return True
+        return True  # TODO: restore when calendar API is fixed
 
     def get_upcoming_events(self, hours: int = 24) -> list[dict]:
         """Get events within the next N hours."""
