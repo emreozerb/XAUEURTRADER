@@ -303,6 +303,50 @@ async def get_calendar():
     return {"events": events}
 
 
+@app.get("/api/candles")
+async def get_candles(timeframe: str = "H1", count: int = 500):
+    """Fetch OHLCV candles from MT5 for the chart view."""
+    if not mt5_connector.connected:
+        raise HTTPException(400, "MT5 not connected.")
+    count = min(count, 1000)
+    df = mt5_connector.get_candles(timeframe, count)
+    if df is None or df.empty:
+        raise HTTPException(400, "Could not fetch candle data.")
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "time": int(row["timestamp"].timestamp()),
+            "open": round(float(row["open"]), 5),
+            "high": round(float(row["high"]), 5),
+            "low": round(float(row["low"]), 5),
+            "close": round(float(row["close"]), 5),
+            "volume": int(row["volume"]),
+        })
+    return records
+
+
+@app.get("/api/chart/trades")
+async def get_chart_trades():
+    """Return trades formatted for chart markers."""
+    from .database import get_trade_log as _get_trade_log
+    raw = await _get_trade_log(200)
+    trades = []
+    for t in raw:
+        trades.append({
+            "id": t.get("id"),
+            "direction": t.get("direction"),
+            "entry_price": t.get("entry_price"),
+            "exit_price": t.get("exit_price"),
+            "entry_time": t.get("entry_timestamp"),
+            "exit_time": t.get("exit_timestamp"),
+            "result": t.get("result"),
+            "pnl_eur": t.get("pnl_eur"),
+            "pips": t.get("pips"),
+            "lot_size": t.get("lot_size"),
+        })
+    return trades
+
+
 # ─── WebSocket ──────────────────────────────────────────────────────
 
 @app.websocket("/ws")

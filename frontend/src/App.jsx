@@ -9,6 +9,7 @@ import TradeLog from './components/TradeLog';
 import Performance from './components/Performance';
 import Backtest from './components/Backtest';
 import EmergencyButton from './components/EmergencyButton';
+import ChartView from './components/ChartView';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -32,6 +33,7 @@ export default function App() {
   const [session, setSession] = useState('');
   const [sessionDisplay, setSessionDisplay] = useState('');
   const [lastAnalysis, setLastAnalysis] = useState(null);
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [confirmClose, setConfirmClose] = useState(false);
   const [liveWarning, setLiveWarning] = useState(null);
   const wsRef = useRef(null);
@@ -218,19 +220,34 @@ export default function App() {
           onBacktest={() => setBacktestOpen(true)} />
 
         <div className="center-panel">
-          <LiveStatus trend={trend} marketMode={marketMode} session={session}
-            sessionDisplay={sessionDisplay} botStatus={botStatus}
-            lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
+          <div className="tab-bar">
+            <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setActiveTab('dashboard')}>Dashboard</button>
+            <button className={`tab-btn ${activeTab === 'chart' ? 'active' : ''}`}
+              onClick={() => setActiveTab('chart')}>Chart</button>
+          </div>
 
-          {pendingSignal && (
-            <ApprovalCard signal={pendingSignal} onApprove={handleApprove} />
+          {activeTab === 'dashboard' && (
+            <>
+              <LiveStatus trend={trend} marketMode={marketMode} session={session}
+                sessionDisplay={sessionDisplay} botStatus={botStatus}
+                lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
+
+              {pendingSignal && (
+                <ApprovalCard signal={pendingSignal} onApprove={handleApprove} />
+              )}
+
+              {positions.map(pos => (
+                <TradeCard key={pos.ticket} position={pos} />
+              ))}
+
+              <TradeLog trades={trades} />
+            </>
           )}
 
-          {positions.map(pos => (
-            <TradeCard key={pos.ticket} position={pos} />
-          ))}
-
-          <TradeLog trades={trades} />
+          {activeTab === 'chart' && (
+            <ChartView />
+          )}
         </div>
       </div>
 
