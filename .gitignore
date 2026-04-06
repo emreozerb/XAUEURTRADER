@@ -1,1 +1,11 @@
 node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.env
+trading_bot.db
+trading_bot.log
+Update.exe
+*.exe
+.DS_Store
+Thumbs.db
