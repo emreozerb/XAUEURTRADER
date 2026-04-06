@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -38,7 +38,7 @@ export default function ChartView() {
       height: 500,
     });
 
-    const candleSeries = chart.addCandlestickSeries({
+    const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#00d26a',
       downColor: '#ff4757',
       borderDownColor: '#ff4757',
