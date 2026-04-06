@@ -14,6 +14,13 @@ def calculate_indicators(df: pd.DataFrame, timeframe: str) -> dict:
 
     result = {}
 
+    # EMA 20 (used for entry proximity in new dual-mode strategy)
+    ema20 = ta.ema(df["close"], length=20)
+    if ema20 is not None and len(ema20) > 0:
+        result["ema_20"] = round(float(ema20.iloc[-1]), 5) if pd.notna(ema20.iloc[-1]) else None
+    else:
+        result["ema_20"] = None
+
     # EMA 50
     ema50 = ta.ema(df["close"], length=50)
     if ema50 is not None and len(ema50) > 0:
@@ -35,11 +42,11 @@ def calculate_indicators(df: pd.DataFrame, timeframe: str) -> dict:
     else:
         result["atr_14"] = None
 
-    # RSI 14 (mainly for H1)
+    # RSI 14
     rsi = ta.rsi(df["close"], length=14)
     if rsi is not None and len(rsi) > 0:
         result["rsi_14"] = round(float(rsi.iloc[-1]), 2) if pd.notna(rsi.iloc[-1]) else None
-        # Also get previous RSI for crossover detection
+        # Keep previous RSI for backwards compatibility
         if len(rsi) > 1 and pd.notna(rsi.iloc[-2]):
             result["rsi_14_prev"] = round(float(rsi.iloc[-2]), 2)
         else:
@@ -47,6 +54,34 @@ def calculate_indicators(df: pd.DataFrame, timeframe: str) -> dict:
     else:
         result["rsi_14"] = None
         result["rsi_14_prev"] = None
+
+    # MACD (12, 26, 9) — used for histogram confirmation in dual-mode strategy
+    macd_df = ta.macd(df["close"], fast=12, slow=26, signal=9)
+    if macd_df is not None and not macd_df.empty:
+        hist_col = [c for c in macd_df.columns if "h" in c.lower() or "hist" in c.lower()]
+        macd_col = [c for c in macd_df.columns if c.startswith("MACD_") and "h" not in c.lower() and "s" not in c.lower()]
+        signal_col = [c for c in macd_df.columns if "s" in c.lower() and "hist" not in c.lower()]
+
+        if hist_col:
+            h = macd_df[hist_col[0]]
+            result["macd_histogram"] = round(float(h.iloc[-1]), 5) if pd.notna(h.iloc[-1]) else None
+            result["macd_histogram_prev"] = round(float(h.iloc[-2]), 5) if len(h) > 1 and pd.notna(h.iloc[-2]) else None
+        else:
+            result["macd_histogram"] = None
+            result["macd_histogram_prev"] = None
+        if macd_col:
+            result["macd_line"] = round(float(macd_df[macd_col[0]].iloc[-1]), 5) if pd.notna(macd_df[macd_col[0]].iloc[-1]) else None
+        else:
+            result["macd_line"] = None
+        if signal_col:
+            result["macd_signal"] = round(float(macd_df[signal_col[0]].iloc[-1]), 5) if pd.notna(macd_df[signal_col[0]].iloc[-1]) else None
+        else:
+            result["macd_signal"] = None
+    else:
+        result["macd_histogram"] = None
+        result["macd_histogram_prev"] = None
+        result["macd_line"] = None
+        result["macd_signal"] = None
 
     # Bollinger Bands (mainly for H1)
     bbands = ta.bbands(df["close"], length=20, std=2)
@@ -72,16 +107,26 @@ def get_full_series(df: pd.DataFrame) -> dict:
     if df is None or df.empty:
         return {}
 
+    ema20 = ta.ema(df["close"], length=20)
     ema50 = ta.ema(df["close"], length=50)
     ema200 = ta.ema(df["close"], length=200)
     atr = ta.atr(df["high"], df["low"], df["close"], length=14)
     rsi = ta.rsi(df["close"], length=14)
     bbands = ta.bbands(df["close"], length=20, std=2)
+    macd_df = ta.macd(df["close"], fast=12, slow=26, signal=9)
+
+    macd_hist = None
+    if macd_df is not None and not macd_df.empty:
+        hist_col = [c for c in macd_df.columns if "h" in c.lower() or "hist" in c.lower()]
+        if hist_col:
+            macd_hist = macd_df[hist_col[0]]
 
     return {
+        "ema_20": ema20,
         "ema_50": ema50,
         "ema_200": ema200,
         "atr_14": atr,
         "rsi_14": rsi,
         "bbands": bbands,
+        "macd_histogram": macd_hist,
     }

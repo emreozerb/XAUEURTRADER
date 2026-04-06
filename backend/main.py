@@ -17,6 +17,9 @@ from .strategy import (
     identify_trend, get_current_session, is_trading_session,
     check_buy_signal, check_sell_signal, calculate_sl_tp,
     check_weekend_close, check_cooldown,
+    get_market_mode, get_confidence_threshold, get_session_display_name,
+    check_ema20_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
+    check_macd_turning_positive, check_macd_turning_negative,
 )
 from .ai_engine import ai_engine
 from .risk_manager import risk_manager
@@ -394,9 +397,13 @@ async def _run_analysis_cycle(h1_candles):
     h1_ind = calculate_indicators(h1_candles, "H1")
     h4_ind = calculate_indicators(h4_candles, "H4")
 
-    # Determine trend and session
-    trend = identify_trend(h4_ind)
+    # Determine trend, mode, and session
+    current_price_val = price.get("bid") or price.get("ask") or h1_ind.get("current_close")
+    trend = identify_trend(h4_ind, current_price=current_price_val)
+    market_mode = get_market_mode(trend)
     session = get_current_session(utc_now)
+    session_display = get_session_display_name(session)
+    logger.info(f"Mode: {market_mode} | Trend: {trend} | Session: {session_display}")
 
     # Safety checks
     dd_check = risk_manager.check_drawdown_limit(account["equity"], bot_config.start_balance)
@@ -451,6 +458,29 @@ async def _run_analysis_cycle(h1_candles):
     # Get last 5 trades for AI context
     last_trades = await get_last_n_trades(5)
 
+    # Compute dual-mode context for AI
+    ema20 = h1_ind.get("ema_20")
+    rsi = h1_ind.get("rsi_14")
+    close_price = h1_ind.get("current_close")
+    macd_hist = h1_ind.get("macd_histogram")
+    macd_hist_prev = h1_ind.get("macd_histogram_prev")
+
+    ema20_prox = check_ema20_proximity(close_price, ema20) if close_price and ema20 else False
+
+    rsi_zone = "neutral"
+    if rsi is not None:
+        if check_rsi_buy_zone(rsi):
+            rsi_zone = "buy (25-42)"
+        elif check_rsi_sell_zone(rsi):
+            rsi_zone = "sell (58-75)"
+
+    macd_dir = "neutral"
+    if macd_hist is not None and macd_hist_prev is not None:
+        if check_macd_turning_positive(macd_hist, macd_hist_prev):
+            macd_dir = "turning_positive"
+        elif check_macd_turning_negative(macd_hist, macd_hist_prev):
+            macd_dir = "turning_negative"
+
     # Build data packet and call AI
     h1_json = h1_candles.tail(10).to_dict("records") if h1_candles is not None else []
     h4_json = h4_candles.tail(5).to_dict("records") if h4_candles is not None else []
@@ -462,6 +492,11 @@ async def _run_analysis_cycle(h1_candles):
         upcoming_events=upcoming_events, session=session,
         last_trades=last_trades, risk_pct=bot_config.validate_risk(),
         max_lot=0,
+        market_mode=market_mode,
+        session_display=session_display,
+        ema20_proximity=ema20_prox,
+        rsi_zone=rsi_zone,
+        macd_direction=macd_dir,
     )
 
     ai_result = await ai_engine.analyze(data_packet)
@@ -502,15 +537,16 @@ async def _run_analysis_cycle(h1_candles):
             bot_config.bot_status = "running"
             return
 
-        # Confidence check
-        if confidence < 60:
-            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}"})
+        # Mode-aware confidence check
+        min_confidence = get_confidence_threshold(market_mode)
+        if confidence < min_confidence - 10:
+            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}_min_{min_confidence}"})
             bot_config.bot_status = "running"
             return
 
-        if confidence < 70:
-            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"weak_signal_{confidence}"})
-            await ws_manager.broadcast_alert(f"Weak signal detected ({confidence}%)", "info")
+        if confidence < min_confidence:
+            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"weak_signal_{confidence}_min_{min_confidence}"})
+            await ws_manager.broadcast_alert(f"Weak signal detected ({confidence}%, need {min_confidence}% for {market_mode} mode)", "info")
             bot_config.bot_status = "running"
             return
 
@@ -612,7 +648,9 @@ async def _run_analysis_cycle(h1_candles):
     await ws_manager.broadcast_status({
         "bot_status": bot_config.bot_status,
         "trend": trend,
+        "market_mode": market_mode,
         "session": session,
+        "session_display": session_display,
         "last_analysis": utc_now.isoformat(),
         "ai_action": action,
         "ai_confidence": confidence,

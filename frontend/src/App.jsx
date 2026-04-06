@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import LoginScreen from './components/LoginScreen';
 import TopBar from './components/TopBar';
 import Settings from './components/Settings';
 import LiveStatus from './components/LiveStatus';
@@ -9,9 +10,12 @@ import Performance from './components/Performance';
 import Backtest from './components/Backtest';
 import EmergencyButton from './components/EmergencyButton';
 
-const API = 'http://localhost:8000';
+const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export default function App() {
+  const [loggedIn, setLoggedIn] = useState(() => {
+    return localStorage.getItem('xaueur_logged_in') === 'true';
+  });
   const [connected, setConnected] = useState(false);
   const [botStatus, setBotStatus] = useState('stopped');
   const [account, setAccount] = useState(null);
@@ -21,10 +25,12 @@ export default function App() {
   const [trades, setTrades] = useState([]);
   const [performance, setPerformance] = useState(null);
   const [alerts, setAlerts] = useState([]);
-  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [backtestOpen, setBacktestOpen] = useState(false);
   const [trend, setTrend] = useState('unknown');
+  const [marketMode, setMarketMode] = useState('');
   const [session, setSession] = useState('');
+  const [sessionDisplay, setSessionDisplay] = useState('');
   const [lastAnalysis, setLastAnalysis] = useState(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const [liveWarning, setLiveWarning] = useState(null);
@@ -37,17 +43,59 @@ export default function App() {
     setTimeout(() => setAlerts(prev => prev.filter(a => a.id !== id)), 5000);
   }, []);
 
-  // WebSocket connection
+  // Handle login
+  const handleLogin = async (creds) => {
+    try {
+      const res = await fetch(`${API}/api/connect`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(creds),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setConnected(true);
+        setAccount(data.account_info);
+        setLoggedIn(true);
+        localStorage.setItem('xaueur_logged_in', 'true');
+        addAlert('MT5 connected', 'success');
+        if (data.is_live) {
+          setLiveWarning(true);
+        }
+      }
+      return data;
+    } catch (e) {
+      return { success: false, error: 'Cannot reach backend' };
+    }
+  };
+
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API}/api/bot/stop`, { method: 'POST' });
+      await fetch(`${API}/api/disconnect`, { method: 'POST' });
+    } catch { /* ignore */ }
+    setLoggedIn(false);
+    setConnected(false);
+    setBotStatus('stopped');
+    setAccount(null);
+    setPositions([]);
+    setPendingSignal(null);
+    localStorage.removeItem('xaueur_logged_in');
+  };
+
+  // WebSocket connection (only when logged in)
   useEffect(() => {
+    if (!loggedIn) return;
     const connect = () => {
-      const ws = new WebSocket('ws://localhost:8000/ws');
+      const ws = new WebSocket(`ws://${new URL(API).host}/ws`);
       ws.onopen = () => { wsRef.current = ws; };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') {
           setBotStatus(msg.data.bot_status || botStatus);
           if (msg.data.trend) setTrend(msg.data.trend);
+          if (msg.data.market_mode) setMarketMode(msg.data.market_mode);
           if (msg.data.session) setSession(msg.data.session);
+          if (msg.data.session_display) setSessionDisplay(msg.data.session_display);
           if (msg.data.last_analysis) setLastAnalysis(msg.data.last_analysis);
         } else if (msg.type === 'signal') {
           setPendingSignal(msg.data);
@@ -63,10 +111,11 @@ export default function App() {
     };
     connect();
     return () => { if (wsRef.current) wsRef.current.close(); };
-  }, [addAlert, botStatus]);
+  }, [addAlert, botStatus, loggedIn]);
 
-  // Poll status
+  // Poll status (only when logged in)
   useEffect(() => {
+    if (!loggedIn) return;
     const poll = async () => {
       try {
         const res = await fetch(`${API}/api/status`);
@@ -82,10 +131,11 @@ export default function App() {
     poll();
     const iv = setInterval(poll, 5000);
     return () => clearInterval(iv);
-  }, []);
+  }, [loggedIn]);
 
-  // Fetch trades & performance
+  // Fetch trades & performance (only when logged in)
   useEffect(() => {
+    if (!loggedIn) return;
     const fetchData = async () => {
       try {
         const [tRes, pRes] = await Promise.all([
@@ -98,31 +148,7 @@ export default function App() {
     fetchData();
     const iv = setInterval(fetchData, 15000);
     return () => clearInterval(iv);
-  }, []);
-
-  const handleConnect = async (creds) => {
-    try {
-      const res = await fetch(`${API}/api/connect`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(creds),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setConnected(true);
-        setAccount(data.account_info);
-        addAlert('MT5 connected', 'success');
-        if (data.is_live) {
-          setLiveWarning(true);
-        }
-      } else {
-        addAlert(data.error || 'Connection failed', 'error');
-      }
-      return data;
-    } catch (e) {
-      addAlert('Cannot reach backend', 'error');
-      return { success: false };
-    }
-  };
+  }, [loggedIn]);
 
   const handleSaveSettings = async (s) => {
     try {
@@ -174,19 +200,26 @@ export default function App() {
     } catch { addAlert('Emergency close failed!', 'error'); }
   };
 
+  // Show login screen if not logged in
+  if (!loggedIn) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
   return (
     <div className="app">
       <TopBar connected={connected} account={account} botStatus={botStatus}
-        onToggleSettings={() => setSettingsOpen(!settingsOpen)} />
+        onToggleSettings={() => setSettingsOpen(!settingsOpen)}
+        onLogout={handleLogout} />
 
       <div className="main-content">
-        <Settings open={settingsOpen} onConnect={handleConnect}
+        <Settings open={settingsOpen}
           onSave={handleSaveSettings} onStart={handleStartBot} onStop={handleStopBot}
           botRunning={botStatus !== 'stopped'} connected={connected}
           onBacktest={() => setBacktestOpen(true)} />
 
         <div className="center-panel">
-          <LiveStatus trend={trend} session={session} botStatus={botStatus}
+          <LiveStatus trend={trend} marketMode={marketMode} session={session}
+            sessionDisplay={sessionDisplay} botStatus={botStatus}
             lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
 
           {pendingSignal && (
@@ -239,7 +272,7 @@ export default function App() {
               <button className="btn btn-approve" onClick={() => setLiveWarning(false)}>
                 I understand, continue
               </button>
-              <button className="btn btn-reject" onClick={() => { setLiveWarning(false); fetch(`${API}/api/disconnect`, { method: 'POST' }); setConnected(false); }}>
+              <button className="btn btn-reject" onClick={() => { setLiveWarning(false); handleLogout(); }}>
                 Disconnect
               </button>
             </div>

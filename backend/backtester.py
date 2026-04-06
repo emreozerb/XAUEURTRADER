@@ -7,7 +7,9 @@ from datetime import datetime, timezone, timedelta
 from .indicators import get_full_series
 from .strategy import (
     identify_trend, get_current_session, is_trading_session,
-    calculate_sl_tp, check_cooldown,
+    calculate_sl_tp, check_cooldown, get_market_mode,
+    check_ema20_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
+    check_macd_turning_positive, check_macd_turning_negative,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,13 +59,15 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         low = candle["low"]
 
         # Get H1 indicators at this point
+        h1_ema20 = _safe_get(h1_series["ema_20"], i)
         h1_ema50 = _safe_get(h1_series["ema_50"], i)
         h1_ema200 = _safe_get(h1_series["ema_200"], i)
         h1_atr = _safe_get(h1_series["atr_14"], i)
         h1_rsi = _safe_get(h1_series["rsi_14"], i)
-        h1_rsi_prev = _safe_get(h1_series["rsi_14"], i - 1)
+        h1_macd_hist = _safe_get(h1_series["macd_histogram"], i)
+        h1_macd_hist_prev = _safe_get(h1_series["macd_histogram"], i - 1)
 
-        if any(v is None for v in [h1_ema50, h1_atr, h1_rsi, h1_rsi_prev]):
+        if any(v is None for v in [h1_ema20, h1_ema50, h1_atr, h1_rsi]):
             continue
 
         # Find corresponding H4 candle
@@ -78,9 +82,10 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         if any(v is None for v in [h4_ema50, h4_ema200, h4_atr]):
             continue
 
-        # Determine trend
+        # Determine trend and mode
         h4_indicators = {"ema_50": h4_ema50, "ema_200": h4_ema200, "atr_14": h4_atr}
-        trend = identify_trend(h4_indicators)
+        trend = identify_trend(h4_indicators, current_price=close)
+        mode = get_market_mode(trend)
         session = get_current_session(ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts)
 
         # Check open trade for SL/TP hit
@@ -136,32 +141,45 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         if not is_trading_session(session):
             continue
 
-        # Check BUY signal
-        if trend == "uptrend":
-            distance = abs(close - h1_ema50)
-            rsi_cross = h1_rsi_prev < 40 and h1_rsi > 40
-            close_above = close > h1_ema50
+        # Check BUY signal (dual-mode strategy)
+        buy_ok = False
+        if mode == "trend" and trend == "uptrend":
+            # Trend mode: EMA20 proximity + RSI buy zone
+            buy_ok = (check_ema20_proximity(close, h1_ema20)
+                      and check_rsi_buy_zone(h1_rsi))
+        elif mode == "range":
+            # Range mode: EMA20 proximity + RSI buy zone + MACD turning positive
+            buy_ok = (check_ema20_proximity(close, h1_ema20)
+                      and check_rsi_buy_zone(h1_rsi)
+                      and h1_macd_hist is not None and h1_macd_hist_prev is not None
+                      and check_macd_turning_positive(h1_macd_hist, h1_macd_hist_prev))
 
-            if distance <= h1_atr and rsi_cross and close_above:
-                sl_tp = calculate_sl_tp("buy", close, h1_atr, h1_ema50)
-                lot = _calc_lot(balance, risk_pct, sl_tp["sl_distance"], pip_value, tick_size)
-                if lot > 0:
-                    open_trade = {
-                        "entry_timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
-                        "direction": "buy",
-                        "entry_price": close,
-                        "stop_loss": sl_tp["stop_loss"],
-                        "take_profit": sl_tp["take_profit"],
-                        "lot_size": lot,
-                    }
+        if buy_ok:
+            sl_tp = calculate_sl_tp("buy", close, h1_atr, h1_ema50)
+            lot = _calc_lot(balance, risk_pct, sl_tp["sl_distance"], pip_value, tick_size)
+            if lot > 0:
+                open_trade = {
+                    "entry_timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+                    "direction": "buy",
+                    "entry_price": close,
+                    "stop_loss": sl_tp["stop_loss"],
+                    "take_profit": sl_tp["take_profit"],
+                    "lot_size": lot,
+                }
 
-        # Check SELL signal
-        elif trend == "downtrend":
-            distance = abs(close - h1_ema50)
-            rsi_cross = h1_rsi_prev > 60 and h1_rsi < 60
-            close_below = close < h1_ema50
+        # Check SELL signal (dual-mode strategy)
+        if not buy_ok and open_trade is None:
+            sell_ok = False
+            if mode == "trend" and trend == "downtrend":
+                sell_ok = (check_ema20_proximity(close, h1_ema20)
+                           and check_rsi_sell_zone(h1_rsi))
+            elif mode == "range":
+                sell_ok = (check_ema20_proximity(close, h1_ema20)
+                           and check_rsi_sell_zone(h1_rsi)
+                           and h1_macd_hist is not None and h1_macd_hist_prev is not None
+                           and check_macd_turning_negative(h1_macd_hist, h1_macd_hist_prev))
 
-            if distance <= h1_atr and rsi_cross and close_below:
+            if sell_ok:
                 sl_tp = calculate_sl_tp("sell", close, h1_atr, h1_ema50)
                 lot = _calc_lot(balance, risk_pct, sl_tp["sl_distance"], pip_value, tick_size)
                 if lot > 0:

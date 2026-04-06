@@ -6,27 +6,61 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
+# =============================================================================
+# OLD SYSTEM PROMPT (kept for rollback reference)
+# =============================================================================
+# SYSTEM_PROMPT_OLD = """You are a professional XAUEUR trading analyst...
+#   - Only BUY in an uptrend (4H EMA 50 > EMA 200)
+#   - Only SELL in a downtrend (4H EMA 50 < EMA 200)
+#   - No trades in sideways markets
+#   - Entry: price pulls back to EMA 50 on H1 with RSI confirmation
+#   - [single confidence threshold of 70%]
+# """
 
-STRATEGY RULES (you must follow these strictly):
-- Only BUY in an uptrend (4H EMA 50 > EMA 200)
-- Only SELL in a downtrend (4H EMA 50 < EMA 200)
-- No trades in sideways markets
-- Entry: price pulls back to EMA 50 on H1 with RSI confirmation
+SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using a dual-mode strategy. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
+
+DUAL-MODE STRATEGY (you must follow these strictly):
+
+MODE DETECTION:
+- The system tells you which mode is active: TREND or RANGE.
+- TREND MODE: 4H EMA50 and EMA200 are clearly separated (>0.3% of price). Trade pullbacks in the direction of the trend.
+  - Only BUY in an uptrend (4H EMA 50 > EMA 200)
+  - Only SELL in a downtrend (4H EMA 50 < EMA 200)
+- RANGE MODE: 4H EMA50 and EMA200 are close together (<=0.3% of price). Trade mean reversion.
+  - Both BUY and SELL are allowed based on RSI zone and MACD confirmation.
+
+ENTRY CONDITIONS (all must be met):
+1. Price is within 0.15% of EMA20 on H1 (proximity confirmed — see ema20_proximity field)
+2. RSI zone:
+   - BUY: RSI 14 between 25 and 42 (see rsi_zone field)
+   - SELL: RSI 14 between 58 and 75
+3. MACD histogram (12, 26, 9):
+   - BUY: histogram turning positive (current > previous — see macd_direction field)
+   - SELL: histogram turning negative (current < previous)
+   - In TREND mode, MACD is a bonus confirmation. In RANGE mode, MACD is required.
+4. No high-impact news within 30 min before / 15 min after
+5. Valid session: Early London (06-08 UTC), London (08-16 UTC), or New York (12-21 UTC)
+
+RISK MANAGEMENT (unchanged):
 - Stop-loss: 1.5x ATR from entry
 - Take-profit: 2.5x ATR from entry, then trail at 1x ATR below/above EMA 50
-- No trading 30 min before/15 min after high-impact news
 - No trading during Asian session unless confidence > 85
 
+CONFIDENCE THRESHOLDS:
+- TREND mode: minimum 70% to recommend a trade
+- RANGE mode: minimum 60% to recommend a trade
+
 ANALYSIS FRAMEWORK (evaluate each point):
-1. Is the 4H trend clear and strong, or are the EMAs tangled?
-2. Is the H1 pullback clean with a proper RSI signal?
-3. Is the entry candle pattern supportive?
+1. Which mode is active (Trend or Range) and is the setup appropriate for that mode?
+2. Is price near EMA20? Is the RSI in the correct zone?
+3. Is the MACD histogram confirming the direction?
 4. Is there a news event that could invalidate this setup?
 5. Is the risk-reward ratio at least 1:1.67?
 6. Does the current session support this trade?
 7. What do recent trade results suggest about current market conditions?
 8. For open positions: should the trailing stop be updated? Should the position be closed early?
+
+In your reasoning, EXPLICITLY STATE which conditions are met and which are not.
 
 RESPOND WITH ONLY THIS JSON (no other text):
 {
@@ -37,7 +71,7 @@ RESPOND WITH ONLY THIS JSON (no other text):
   "take_profit": "number or null",
   "recommended_lot": "number or null",
   "new_sl": "number or null (only for update_sl action)",
-  "reasoning": "2-3 sentence explanation of your decision"
+  "reasoning": "2-3 sentence explanation — state which conditions are met/not met"
 }"""
 
 
@@ -61,7 +95,7 @@ class AIEngine:
 
 {json.dumps(data_packet, indent=2, default=str)}
 
-Analyze this data according to the strategy rules and provide your trading decision."""
+Analyze this data according to the dual-mode strategy rules and provide your trading decision."""
 
         try:
             response = self.client.messages.create(
@@ -114,7 +148,12 @@ Analyze this data according to the strategy rules and provide your trading decis
                           h4_indicators: dict, trend: str, account: dict,
                           positions: list, upcoming_events: list,
                           session: str, last_trades: list,
-                          risk_pct: float, max_lot: float) -> dict:
+                          risk_pct: float, max_lot: float,
+                          market_mode: str = "trend",
+                          session_display: str = "",
+                          ema20_proximity: bool = False,
+                          rsi_zone: str = "neutral",
+                          macd_direction: str = "neutral") -> dict:
         """Build the data packet to send to Claude."""
         return {
             "current_price": price,
@@ -125,6 +164,11 @@ Analyze this data according to the strategy rules and provide your trading decis
                 "h4": h4_indicators,
             },
             "trend": trend,
+            "market_mode": market_mode,
+            "active_session": session_display or session,
+            "ema20_proximity": ema20_proximity,
+            "rsi_zone": rsi_zone,
+            "macd_direction": macd_direction,
             "account": account,
             "open_positions": positions,
             "upcoming_events": upcoming_events,

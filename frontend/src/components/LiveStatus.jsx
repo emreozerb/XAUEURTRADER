@@ -1,6 +1,7 @@
 import React from 'react';
 
 const SESSION_LABELS = {
+  early_london: 'Early London',
   london: 'London',
   london_newyork: 'London / New York',
   new_york: 'New York',
@@ -15,10 +16,11 @@ const STATUS_LABELS = {
   paused: 'Bot paused',
 };
 
-export default function LiveStatus({ trend, session, botStatus, lastAnalysis, currentPrice }) {
+export default function LiveStatus({ trend, marketMode, session, sessionDisplay, botStatus, lastAnalysis, currentPrice }) {
   const trendClass = trend === 'uptrend' ? 'trend-up' : trend === 'downtrend' ? 'trend-down' : 'trend-sideways';
   const trendIcon = trend === 'uptrend' ? '▲' : trend === 'downtrend' ? '▼' : '◆';
-  const trendLabel = trend === 'uptrend' ? 'UPTREND' : trend === 'downtrend' ? 'DOWNTREND' : trend === 'sideways' ? 'SIDEWAYS' : 'UNKNOWN';
+  const trendLabel = trend === 'uptrend' ? 'UPTREND' : trend === 'downtrend' ? 'DOWNTREND' : trend === 'range' ? 'RANGE' : trend === 'sideways' ? 'SIDEWAYS' : 'UNKNOWN';
+  const modeLabel = marketMode === 'trend' ? 'TREND MODE' : marketMode === 'range' ? 'RANGE MODE' : '';
 
   return (
     <div className="live-status">
@@ -27,12 +29,20 @@ export default function LiveStatus({ trend, session, botStatus, lastAnalysis, cu
         <div className={`value ${trendClass}`}>
           {trendIcon} {trendLabel}
         </div>
+        {modeLabel && (
+          <div className="mode-badge" style={{
+            marginTop: 8, fontSize: 11, fontWeight: 700, letterSpacing: 1,
+            color: marketMode === 'trend' ? 'var(--accent-blue)' : 'var(--accent-orange)',
+          }}>
+            {modeLabel}
+          </div>
+        )}
       </div>
 
       <div className="status-card">
         <div className="label">Session</div>
         <div className="value" style={{ fontSize: 20 }}>
-          {SESSION_LABELS[session] || session || '—'}
+          {sessionDisplay || SESSION_LABELS[session] || session || '—'}
         </div>
       </div>
 
