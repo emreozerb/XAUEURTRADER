@@ -263,6 +263,30 @@ export default function App() {
 
           {activeTab === 'dashboard' && (
             <>
+              {botStatus === 'error' && errorMessage && (
+                <div style={{
+                  margin: '12px 16px 0',
+                  padding: '12px 16px',
+                  borderRadius: 7,
+                  background: 'rgba(255,71,87,0.10)',
+                  border: '1px solid rgba(255,71,87,0.45)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                }}>
+                  <span style={{ fontSize: 20, lineHeight: 1, color: 'var(--accent-red)', flexShrink: 0 }}>⚠</span>
+                  <div>
+                    <div style={{ color: 'var(--accent-red)', fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                      Bot stopped — error
+                    </div>
+                    <div style={{ color: 'var(--text-primary)', fontSize: 13 }}>{errorMessage}</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+                      Fix the issue, then press <strong>Start Bot</strong> to resume.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <LiveStatus trend={trend} marketMode={marketMode} session={session}
                 sessionDisplay={sessionDisplay} botStatus={botStatus}
                 lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
