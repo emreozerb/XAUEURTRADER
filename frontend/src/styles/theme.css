@@ -92,7 +92,20 @@ body {
 .bot-status-badge.running { background: rgba(0, 210, 106, 0.15); color: var(--accent-green); }
 .bot-status-badge.analyzing { background: rgba(77, 171, 247, 0.15); color: var(--accent-blue); animation: pulse 1.5s infinite; }
 .bot-status-badge.awaiting_approval { background: rgba(255, 165, 2, 0.15); color: var(--accent-orange); animation: pulse 1.5s infinite; }
-.bot-status-badge.paused { background: rgba(255, 71, 87, 0.15); color: var(--accent-red); }
+.bot-status-badge.error { background: rgba(255, 71, 87, 0.25); color: var(--accent-red); border: 1px solid rgba(255, 71, 87, 0.5); animation: pulse 1.5s infinite; }
+
+.error-banner {
+  background: rgba(255, 71, 87, 0.12);
+  border: 1px solid rgba(255, 71, 87, 0.4);
+  border-radius: 6px;
+  color: var(--accent-red);
+  font-size: 12px;
+  padding: 6px 12px;
+  max-width: 500px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

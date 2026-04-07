@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function TopBar({ connected, account, botStatus, onToggleSettings, onLogout }) {
+export default function TopBar({ connected, account, botStatus, errorMessage, onToggleSettings, onLogout }) {
   return (
     <div className="top-bar">
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -23,7 +23,12 @@ export default function TopBar({ connected, account, botStatus, onToggleSettings
         )}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {botStatus === 'error' && errorMessage && (
+          <div className="error-banner" title={errorMessage}>
+            ⚠ {errorMessage}
+          </div>
+        )}
         <span className={`bot-status-badge ${botStatus}`}>
           {botStatus.replace('_', ' ')}
         </span>

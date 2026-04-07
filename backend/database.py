@@ -2,6 +2,7 @@
 
 import aiosqlite
 import os
+from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trading_bot.db")
 
@@ -69,6 +70,15 @@ async def init_db():
                 avg_trade_duration_min REAL,
                 max_drawdown_eur REAL,
                 max_drawdown_pct REAL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                level TEXT NOT NULL,
+                source TEXT,
+                message TEXT NOT NULL
             )
         """)
         await db.commit()
@@ -213,6 +223,32 @@ async def get_performance_summary() -> dict:
             "max_drawdown_eur": round(max_dd, 2),
             "max_drawdown_pct": round(max_dd_pct, 1)
         }
+
+
+async def log_event(level: str, message: str, source: str = "system") -> None:
+    """Persist an event/alert to the event_log table."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO event_log (timestamp, level, source, message) VALUES (?, ?, ?, ?)",
+                (datetime.now(timezone.utc).isoformat(), level, source, message)
+            )
+            await db.commit()
+    except Exception as exc:
+        # Don't let logging failures crash the bot — just print to stderr
+        import sys
+        print(f"[event_log write error] {exc}", file=sys.stderr)
+
+
+async def get_event_log(limit: int = 200) -> list[dict]:
+    """Return the most recent events, newest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM event_log ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
 
 async def generate_weekly_summary(week_str: str):

@@ -10,6 +10,7 @@ import Performance from './components/Performance';
 import Backtest from './components/Backtest';
 import EmergencyButton from './components/EmergencyButton';
 import ChartView from './components/ChartView';
+import EventLog from './components/EventLog';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -36,6 +37,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [confirmClose, setConfirmClose] = useState(false);
   const [liveWarning, setLiveWarning] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [events, setEvents] = useState([]);
   const wsRef = useRef(null);
   const alertIdRef = useRef(0);
 
@@ -94,6 +97,7 @@ export default function App() {
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') {
           setBotStatus(msg.data.bot_status || botStatus);
+          if (msg.data.error_message !== undefined) setErrorMessage(msg.data.error_message);
           if (msg.data.trend) setTrend(msg.data.trend);
           if (msg.data.market_mode) setMarketMode(msg.data.market_mode);
           if (msg.data.session) setSession(msg.data.session);
@@ -124,6 +128,7 @@ export default function App() {
         const data = await res.json();
         setConnected(data.connected);
         setBotStatus(data.bot_status);
+        if (data.error_message !== undefined) setErrorMessage(data.error_message);
         if (data.account) setAccount(data.account);
         if (data.positions) setPositions(data.positions);
         if (data.current_price) setCurrentPrice(data.current_price);
@@ -149,6 +154,20 @@ export default function App() {
     };
     fetchData();
     const iv = setInterval(fetchData, 15000);
+    return () => clearInterval(iv);
+  }, [loggedIn]);
+
+  // Fetch event log
+  useEffect(() => {
+    if (!loggedIn) return;
+    const fetchEvents = async () => {
+      try {
+        const res = await fetch(`${API}/api/events`);
+        if (res.ok) setEvents(await res.json());
+      } catch { /* backend not ready */ }
+    };
+    fetchEvents();
+    const iv = setInterval(fetchEvents, 10000);
     return () => clearInterval(iv);
   }, [loggedIn]);
 
@@ -210,6 +229,7 @@ export default function App() {
   return (
     <div className="app">
       <TopBar connected={connected} account={account} botStatus={botStatus}
+        errorMessage={errorMessage}
         onToggleSettings={() => setSettingsOpen(!settingsOpen)}
         onLogout={handleLogout} />
 
@@ -225,6 +245,20 @@ export default function App() {
               onClick={() => setActiveTab('dashboard')}>Dashboard</button>
             <button className={`tab-btn ${activeTab === 'chart' ? 'active' : ''}`}
               onClick={() => setActiveTab('chart')}>Chart</button>
+            <button
+              className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
+              onClick={() => setActiveTab('logs')}
+              style={{ position: 'relative' }}
+            >
+              Logs
+              {events.some(e => e.level === 'error') && activeTab !== 'logs' && (
+                <span style={{
+                  position: 'absolute', top: 6, right: 4,
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: 'var(--accent-red)', display: 'inline-block',
+                }} />
+              )}
+            </button>
           </div>
 
           {activeTab === 'dashboard' && (
@@ -247,6 +281,12 @@ export default function App() {
 
           {activeTab === 'chart' && (
             <ChartView />
+          )}
+
+          {activeTab === 'logs' && (
+            <div style={{ padding: 16 }}>
+              <EventLog events={events} />
+            </div>
           )}
         </div>
       </div>

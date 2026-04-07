@@ -27,11 +27,11 @@ class BotConfig(BaseModel):
     max_concurrent_positions: int = 1
     # Internal state
     bot_running: bool = False
-    bot_status: str = "stopped"  # stopped, running, analyzing, awaiting_approval, paused
+    bot_status: str = "stopped"  # stopped, running, analyzing, awaiting_approval, error
+    error_message: str | None = None
     start_balance: float = 0.0
     consecutive_losses: int = 0
     last_sl_hit_time: str | None = None
-    pause_until: str | None = None
     last_user_interaction: str | None = None
 
     def validate_risk(self) -> float:
