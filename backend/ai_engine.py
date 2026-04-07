@@ -80,17 +80,46 @@ class AIEngine:
         self.client = None
         self.consecutive_failures = 0
         self.last_analysis_candle = None
+        self.last_error_reason: str | None = None  # human-readable cause of last failure
 
     def initialize(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.consecutive_failures = 0
+        self.last_error_reason = None
+
+    def _classify_api_error(self, exc: anthropic.APIError) -> str:
+        """Return a clear human-readable reason for an Anthropic API error."""
+        # Out-of-credits: status 402, or 400/403 with billing message
+        if hasattr(exc, "status_code"):
+            code = exc.status_code
+            body = str(exc).lower()
+            if code == 402 or (code in (400, 403) and any(
+                kw in body for kw in ("credit", "billing", "balance", "payment")
+            )):
+                return (
+                    "Anthropic credits exhausted — add credits at "
+                    "console.anthropic.com/settings/billing"
+                )
+            if code == 401:
+                return "Invalid Anthropic API key — check Settings."
+            if code == 403:
+                return "Anthropic API access denied — check your API key permissions."
+            if code == 429:
+                return "Anthropic rate limit reached — too many requests. Bot will retry."
+            if code == 529 or code >= 500:
+                return f"Anthropic API overloaded or down (HTTP {code}) — will retry."
+        if isinstance(exc, anthropic.APIConnectionError):
+            return "Cannot reach Anthropic API — check internet connection."
+        if isinstance(exc, anthropic.APITimeoutError):
+            return "Anthropic API request timed out — will retry."
+        return f"Anthropic API error: {exc}"
 
     async def analyze(self, data_packet: dict) -> dict | None:
         """Send market data to Claude and get trading decision."""
         if self.client is None:
+            self.last_error_reason = "AI engine not initialised — API key missing."
             return None
 
-        # Build the user message with all market data
         user_message = f"""Current market data for XAUEUR analysis:
 
 {json.dumps(data_packet, indent=2, default=str)}
@@ -105,10 +134,9 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # Parse the response
             text = response.content[0].text.strip()
 
-            # Try to extract JSON from the response
+            # Strip markdown code fences if present
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -116,30 +144,81 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
                 text = text.strip()
 
             result = json.loads(text)
-            self.consecutive_failures = 0
 
             # Validate required fields
             required = ["action", "confidence", "reasoning"]
             for field in required:
                 if field not in result:
                     logger.error(f"AI response missing field: {field}")
+                    self.last_error_reason = f"AI returned incomplete JSON (missing '{field}')."
+                    self.consecutive_failures += 1
                     return None
 
-            # Ensure confidence is an integer
             result["confidence"] = int(result["confidence"])
-
+            self.consecutive_failures = 0
+            self.last_error_reason = None
             return result
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response as JSON: {e}")
+            reason = f"AI returned invalid JSON — could not parse response: {e}"
+            logger.error(reason)
+            self.last_error_reason = reason
             self.consecutive_failures += 1
             return None
+
+        except anthropic.AuthenticationError as e:
+            reason = "Invalid Anthropic API key — check Settings."
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.PermissionDeniedError as e:
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.RateLimitError as e:
+            reason = self._classify_api_error(e)
+            logger.warning(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APIStatusError as e:
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | status={e.status_code} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APIConnectionError as e:
+            reason = "Cannot reach Anthropic API — check internet connection."
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APITimeoutError as e:
+            reason = "Anthropic API request timed out — will retry next candle."
+            logger.warning(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
         except anthropic.APIError as e:
-            logger.error(f"Anthropic API error: {e}")
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
             self.consecutive_failures += 1
             return None
+
         except Exception as e:
-            logger.error(f"AI analysis error: {e}")
+            reason = f"Unexpected AI error: {type(e).__name__}: {e}"
+            logger.error(reason, exc_info=True)
+            self.last_error_reason = reason
             self.consecutive_failures += 1
             return None
 

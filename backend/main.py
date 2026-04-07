@@ -548,10 +548,13 @@ async def _run_analysis_cycle(h1_candles):
     ai_result = await ai_engine.analyze(data_packet)
 
     if ai_result is None:
+        reason = ai_engine.last_error_reason or "Unknown AI error."
+        # Always log each individual failure so it appears in the event log
+        await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
         if ai_engine.consecutive_failures >= 3:
             bot_config.bot_running = False
             bot_config.bot_status = "error"
-            bot_config.error_message = f"AI service unavailable after {ai_engine.consecutive_failures} attempts — bot stopped. Check API key."
+            bot_config.error_message = f"AI stopped after 3 failures — {reason}"
             await log_and_alert(bot_config.error_message, "error", "ai")
             await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
         else:
