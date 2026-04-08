@@ -18,11 +18,9 @@ from .mt5_connector import mt5_connector
 from .indicators import calculate_indicators
 from .strategy import (
     identify_trend, get_current_session, is_trading_session,
-    check_buy_signal, check_sell_signal, calculate_sl_tp,
-    check_weekend_close, check_cooldown,
-    get_market_mode, get_confidence_threshold, get_session_display_name,
-    check_ema20_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
-    check_macd_turning_positive, check_macd_turning_negative,
+    check_buy_signal, check_sell_signal, check_ema50_proximity,
+    calculate_sl_tp, check_weekend_close, check_cooldown,
+    get_market_mode, get_session_display_name, get_test_signal,
 )
 from .ai_engine import ai_engine
 from .risk_manager import risk_manager
@@ -34,6 +32,14 @@ from .logger import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# TEST MODE — set True to fire an unconditional BUY on every H1 candle close.
+# Bypasses all strategy/session/news/cooldown filters so you can verify the
+# full order-execution pipeline on a demo account within one hour.
+# Set back to False once execution is confirmed working.
+# =============================================================================
+TEST_MODE = True
 
 
 async def log_and_alert(message: str, level: str = "info", source: str = "system") -> None:
@@ -484,6 +490,54 @@ async def _run_analysis_cycle(h1_candles):
         bot_config.bot_status = "running"
         return
 
+    # ── TEST MODE ────────────────────────────────────────────────────────────
+    # Fires an unconditional BUY on every H1 candle to verify the execution
+    # pipeline end-to-end. All strategy/AI/session/cooldown filters are skipped.
+    # Safety guardrails (drawdown, margin) still apply above.
+    if TEST_MODE:
+        logger.warning("TEST MODE ACTIVE — real strategy bypassed")
+        ask    = price.get("ask") or price.get("bid", 0)
+        atr    = h1_ind.get("atr_14") or 1.0
+        sl     = round(ask - 1.5 * atr, 5)
+        tp     = round(ask + 2.5 * atr, 5)
+        min_lot = (mt5_connector.symbol_info or {}).get("min_lot", 0.01)
+
+        test_analysis = {
+            "timestamp": utc_now.isoformat(),
+            "xaueur_price": price.get("bid"),
+            "trend": trend, "session": session,
+            "ai_action": "buy", "ai_confidence": 99,
+            "ai_reasoning": "TEST MODE — unconditional BUY to verify execution pipeline",
+        }
+
+        if bot_config.lot_size_mode == "auto":
+            result = await trade_manager.execute_trade("buy", min_lot, sl, tp, 99, "TEST MODE")
+            await log_analysis({**test_analysis,
+                                 "executed": 1 if result["success"] else 0,
+                                 "skipped_reason": None if result["success"] else result.get("error")})
+            if result["success"]:
+                await log_and_alert(f"TEST: BUY {min_lot} lots @ {result['price']}", "success", "bot")
+            else:
+                await log_and_alert(f"TEST: Trade failed: {result['error']}", "error", "bot")
+        else:
+            signal = {
+                "direction": "buy", "confidence": 99,
+                "entry_price": ask, "stop_loss": sl, "take_profit": tp,
+                "lot_size": min_lot, "risk_eur": 0, "risk_pct": 0, "sl_pips": 0,
+                "risk_reward": round((tp - ask) / (ask - sl), 2) if ask != sl else 0,
+                "reasoning": "TEST MODE — unconditional BUY to verify execution pipeline",
+                "analysis_data": test_analysis,
+            }
+            await log_analysis({**test_analysis, "executed": 0, "skipped_reason": "test_mode_pending_approval"})
+            trade_manager.set_pending_signal(signal)
+            await ws_manager.broadcast_signal(signal)
+            await log_and_alert("TEST MODE: BUY signal — awaiting approval.", "warning", "bot")
+
+        if bot_config.bot_status == "analyzing":
+            bot_config.bot_status = "running"
+        await ws_manager.broadcast_status({"bot_status": bot_config.bot_status})
+        return
+    # ── END TEST MODE ────────────────────────────────────────────────────────
 
     # Weekend check
     if positions:
@@ -504,30 +558,56 @@ async def _run_analysis_cycle(h1_candles):
     # Get last 5 trades for AI context
     last_trades = await get_last_n_trades(5)
 
-    # Compute dual-mode context for AI
-    ema20 = h1_ind.get("ema_20")
-    rsi = h1_ind.get("rsi_14")
-    close_price = h1_ind.get("current_close")
-    macd_hist = h1_ind.get("macd_histogram")
-    macd_hist_prev = h1_ind.get("macd_histogram_prev")
+    # ── Per-candle diagnostic log ─────────────────────────────────────────────
+    rsi       = h1_ind.get("rsi_14")
+    close_p   = h1_ind.get("current_close")
+    ema50_h1  = h1_ind.get("ema_50")
+    ema50_dist_pct = (
+        abs(close_p - ema50_h1) / ema50_h1 * 100
+        if close_p and ema50_h1 else None
+    )
+    buy_chk  = check_buy_signal(h1_ind, trend, session, news_clear, positions)
+    sell_chk = check_sell_signal(h1_ind, trend, session, news_clear, positions)
 
-    ema20_prox = check_ema20_proximity(close_price, ema20) if close_price and ema20 else False
+    def _fmt_checks(chk: dict) -> str:
+        return " | ".join(
+            f"{'✓' if v else '✗'} {k}" for k, v in chk.get("checks", {}).items()
+        )
 
-    rsi_zone = "neutral"
-    if rsi is not None:
-        if check_rsi_buy_zone(rsi):
-            rsi_zone = "buy (25-42)"
-        elif check_rsi_sell_zone(rsi):
-            rsi_zone = "sell (58-75)"
+    logger.info(
+        f"CANDLE | trend={trend} mode={market_mode} session={session} | "
+        f"RSI={rsi:.1f if rsi else 'n/a'} | "
+        f"EMA50 dist={ema50_dist_pct:.2f}% | "
+        f"BUY=[{_fmt_checks(buy_chk)}] | "
+        f"SELL=[{_fmt_checks(sell_chk)}]"
+    )
 
-    macd_dir = "neutral"
-    if macd_hist is not None and macd_hist_prev is not None:
-        if check_macd_turning_positive(macd_hist, macd_hist_prev):
-            macd_dir = "turning_positive"
-        elif check_macd_turning_negative(macd_hist, macd_hist_prev):
-            macd_dir = "turning_negative"
+    # ── Simplified strategy pre-filter ───────────────────────────────────────
+    # Only call the AI if at least one direction clears all rule-based conditions.
+    # This reduces unnecessary API calls and ensures the AI focuses on valid setups.
+    signal_direction: str | None = None
+    if buy_chk["signal"]:
+        signal_direction = "buy"
+    elif sell_chk["signal"]:
+        signal_direction = "sell"
 
-    # Build data packet and call AI
+    if signal_direction is None:
+        # Neither direction qualifies — log top reason and skip AI call
+        top_reason = (buy_chk["reasons"] + sell_chk["reasons"])[0] if (buy_chk["reasons"] or sell_chk["reasons"]) else "no setup"
+        logger.info(f"No signal this candle. Buy: {buy_chk['reasons']} | Sell: {sell_chk['reasons']}")
+        await log_analysis({
+            "timestamp": utc_now.isoformat(), "xaueur_price": price.get("bid"),
+            "h1_ema50": ema50_h1, "h1_ema200": h1_ind.get("ema_200"),
+            "h4_ema50": h4_ind.get("ema_50"), "h4_ema200": h4_ind.get("ema_200"),
+            "rsi_14": rsi, "atr_14": h1_ind.get("atr_14"),
+            "trend": trend, "session": session,
+            "ai_action": "hold", "ai_confidence": 0, "ai_reasoning": top_reason,
+            "executed": 0, "skipped_reason": "no_strategy_signal",
+        })
+        bot_config.bot_status = "running"
+        return
+
+    # ── Call AI for confidence + SL/TP validation ────────────────────────────
     h1_json = h1_candles.tail(10).to_dict("records") if h1_candles is not None else []
     h4_json = h4_candles.tail(5).to_dict("records") if h4_candles is not None else []
 
@@ -540,16 +620,12 @@ async def _run_analysis_cycle(h1_candles):
         max_lot=0,
         market_mode=market_mode,
         session_display=session_display,
-        ema20_proximity=ema20_prox,
-        rsi_zone=rsi_zone,
-        macd_direction=macd_dir,
     )
 
     ai_result = await ai_engine.analyze(data_packet)
 
     if ai_result is None:
         reason = ai_engine.last_error_reason or "Unknown AI error."
-        # Always log each individual failure so it appears in the event log
         await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
         if ai_engine.consecutive_failures >= 3:
             bot_config.bot_running = False
@@ -565,11 +641,11 @@ async def _run_analysis_cycle(h1_candles):
     analysis_data = {
         "timestamp": utc_now.isoformat(),
         "xaueur_price": price["bid"],
-        "h1_ema50": h1_ind.get("ema_50"),
+        "h1_ema50": ema50_h1,
         "h1_ema200": h1_ind.get("ema_200"),
         "h4_ema50": h4_ind.get("ema_50"),
         "h4_ema200": h4_ind.get("ema_200"),
-        "rsi_14": h1_ind.get("rsi_14"),
+        "rsi_14": rsi,
         "atr_14": h1_ind.get("atr_14"),
         "trend": trend,
         "session": session,
@@ -582,6 +658,8 @@ async def _run_analysis_cycle(h1_candles):
     action = ai_result["action"]
 
     # Handle AI actions
+    MIN_CONFIDENCE = 60  # Flat threshold — simplified strategy, no mode split
+
     if action in ("buy", "sell"):
         # Check cooldown
         if not check_cooldown(bot_config.last_sl_hit_time, utc_now):
@@ -589,16 +667,10 @@ async def _run_analysis_cycle(h1_candles):
             bot_config.bot_status = "running"
             return
 
-        # Mode-aware confidence check
-        min_confidence = get_confidence_threshold(market_mode)
-        if confidence < min_confidence - 10:
-            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}_min_{min_confidence}"})
-            bot_config.bot_status = "running"
-            return
-
-        if confidence < min_confidence:
-            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"weak_signal_{confidence}_min_{min_confidence}"})
-            await log_and_alert(f"Weak signal detected ({confidence}%, need {min_confidence}% for {market_mode} mode)", "info", "ai")
+        # Flat 60% confidence threshold
+        if confidence < MIN_CONFIDENCE:
+            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}_min_{MIN_CONFIDENCE}"})
+            logger.info(f"AI confidence {confidence}% below threshold {MIN_CONFIDENCE}% — skipping")
             bot_config.bot_status = "running"
             return
 
