@@ -253,9 +253,21 @@ class MT5Connector:
                 return {"success": False, "error": "Order send returned None."}
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Map common retcodes to actionable messages
+                retcode_hints = {
+                    10027: "AutoTrading is disabled in MetaTrader 5 — click the AutoTrading button in the MT5 toolbar to enable it.",
+                    10014: "Invalid lot size.",
+                    10015: "Invalid price.",
+                    10016: "Invalid SL or TP.",
+                    10019: "Not enough money.",
+                    10025: "Trade context busy — MT5 is processing another request.",
+                    10026: "AutoTrading disabled by server.",
+                    10030: "Invalid order fill type — try a different filling mode.",
+                }
+                hint = retcode_hints.get(result.retcode, result.comment)
                 return {
                     "success": False,
-                    "error": f"Order failed: {result.retcode} - {result.comment}",
+                    "error": f"Order failed ({result.retcode}): {hint}",
                     "retcode": result.retcode,
                 }
 
