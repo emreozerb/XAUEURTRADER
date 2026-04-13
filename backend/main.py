@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # full order-execution pipeline on a demo account within one hour.
 # Set back to False once execution is confirmed working.
 # =============================================================================
-TEST_MODE = True
+TEST_MODE = False
 
 
 async def log_and_alert(message: str, level: str = "info", source: str = "system") -> None:
@@ -496,6 +496,12 @@ async def _run_analysis_cycle(h1_candles):
     # Safety guardrails (drawdown, margin) still apply above.
     if TEST_MODE:
         logger.warning("TEST MODE ACTIVE — real strategy bypassed")
+        # Pipeline confirmed if a position is already open — skip to avoid hedging errors
+        if positions:
+            logger.warning("TEST MODE: open position exists, skipping this candle. Set TEST_MODE = False to switch to real strategy.")
+            bot_config.bot_status = "running"
+            await ws_manager.broadcast_status({"bot_status": "running"})
+            return
         ask    = price.get("ask") or price.get("bid", 0)
         atr    = h1_ind.get("atr_14") or 1.0
         sl     = round(ask - 1.5 * atr, 5)
