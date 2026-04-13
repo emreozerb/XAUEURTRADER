@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -128,7 +128,7 @@ export default function ChartView() {
       markers.sort((a, b) => a.time - b.time);
 
       if (markers.length > 0) {
-        candleSeries.setMarkers(markers);
+        createSeriesMarkers(candleSeries, markers);
       }
 
       setTradeCount(trades.length);
