@@ -130,7 +130,7 @@ class TradeManager:
 
         if pnl <= 0:
             bot_config.consecutive_losses += 1
-            bot_config.last_sl_hit_time = datetime.now(timezone.utc).isoformat()
+            # last_sl_hit_time no longer tracked — cooldown removed in Phase 4
         else:
             bot_config.consecutive_losses = 0
 

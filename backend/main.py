@@ -441,11 +441,6 @@ async def _run_analysis_cycle(m15_candles):
         await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
         return
 
-    # Consecutive losses — soft pause for 2 hours
-    if bot_config.consecutive_losses >= 5 and bot_config.bot_status != "paused":
-        await soft_pause(2, f"{bot_config.consecutive_losses} consecutive losses — paused for 2 hours", "risk")
-        return
-
     # Inactivity — soft pause for 1 hour if no user interaction in 24h
     if bot_config.last_user_interaction:
         last_interact = datetime.fromisoformat(bot_config.last_user_interaction)

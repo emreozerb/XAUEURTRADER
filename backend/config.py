@@ -22,7 +22,7 @@ class BotConfig(BaseModel):
     mt5_password: str = ""
     mt5_server: str = ""
     symbol: str = "XAUEUR"
-    risk_per_trade_pct: float = 2.0
+    risk_per_trade_pct: float = 5.0
     # lot_size_mode is always "auto" — approval flow removed
     # max_concurrent_positions is always 1
     # Internal state
@@ -36,8 +36,8 @@ class BotConfig(BaseModel):
     last_user_interaction: str | None = None
 
     def validate_risk(self) -> float:
-        """Ensure risk is capped at 5%."""
-        return min(max(self.risk_per_trade_pct, 1.0), 5.0)
+        """Ensure risk is between 1% and 10%."""
+        return min(max(self.risk_per_trade_pct, 1.0), 10.0)
 
 
 settings = Settings()

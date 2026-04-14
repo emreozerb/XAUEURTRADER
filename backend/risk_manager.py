@@ -16,8 +16,8 @@ class RiskManager:
         Calculate recommended lot size based on risk parameters.
         Returns lot size and risk details.
         """
-        # Cap risk at 5%
-        risk_pct = min(risk_pct, 5.0)
+        # Cap risk at 10% (Phase 4 — raised from 5%)
+        risk_pct = min(risk_pct, 10.0)
         risk_amount = account_balance * (risk_pct / 100)
 
         pip_value = symbol_info.get("pip_value", 1.0)
@@ -107,8 +107,8 @@ class RiskManager:
             abs(p.get("pnl", 0)) / account_balance * 100
             for p in open_positions
         ) if account_balance > 0 else 0
-        if total_risk_pct + risk_pct > 5.0:
-            errors.append(f"Total risk would exceed 5% ({total_risk_pct + risk_pct:.1f}%).")
+        if total_risk_pct + risk_pct > 10.0:
+            errors.append(f"Total risk would exceed 10% ({total_risk_pct + risk_pct:.1f}%).")
 
         # Low margin check
         if free_margin < (0.3 * equity) and equity > 0:

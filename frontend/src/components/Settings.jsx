@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 export default function Settings({ open, onSave, onStart, onStop, botRunning, connected, onBacktest }) {
-  const [risk, setRisk] = useState(2);
+  const [risk, setRisk] = useState(5);
 
   const handleSave = () => {
     onSave({ risk_per_trade_pct: risk });
@@ -13,7 +13,7 @@ export default function Settings({ open, onSave, onStart, onStop, botRunning, co
       <div className="field">
         <label>Risk Per Trade</label>
         <div className="risk-display">{risk}%</div>
-        <input type="range" min="1" max="5" step="0.5" value={risk}
+        <input type="range" min="1" max="10" step="0.5" value={risk}
           onChange={e => setRisk(parseFloat(e.target.value))} />
       </div>
 

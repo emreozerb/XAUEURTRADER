@@ -236,18 +236,18 @@ def get_test_signal() -> dict:
 
 
 # =============================================================================
-# SIMPLIFIED STRATEGY (Phase 3 — Aggressive)
+# STRATEGY (Phase 4 — Max Risk Demo)
 # =============================================================================
-# Phase 2 → Phase 3 changes:
-#   - Session filter: REMOVED — trades 24/5, all sessions
-#   - EMA50 proximity: 1.5% (was 0.5%) — fires far more often
-#   - RSI buy zone: 25-65 (was 30-55) — covers nearly the full non-overbought range
-#   - RSI sell zone: 35-75 (was 45-70) — covers nearly the full non-oversold range
-#   - AI confidence threshold: 45% flat (was 60%)
-#   - SL-hit cooldown: 1 hour (was 2 hours)
-#   - Consecutive-loss pause: triggers at 5 losses (was 3), pauses 2 hours (was 4)
-#   - MACD: still removed (was removed in Phase 2)
-#   - Trend/direction rules and duplicate position filter: unchanged
+# Phase 3 → Phase 4 changes:
+#   - Risk per trade: 5% default, cap raised to 10%
+#   - Trend filter: REMOVED — BUY/SELL allowed in any H4 trend/range condition
+#   - SL: 0.75× ATR (was 1.5×), TP: 2.5× ATR unchanged — R:R ≈ 1:3.3
+#   - SL-hit cooldown: REMOVED — re-enter immediately after SL hit
+#   - Consecutive-loss pause: REMOVED — bot never pauses for losses
+#   - Session filter: still removed (removed in Phase 3)
+#   - EMA50 proximity: 1.5% (unchanged from Phase 3)
+#   - RSI zones: 25-65 buy / 35-75 sell (unchanged from Phase 3)
+#   - AI confidence threshold: 45% flat (unchanged from Phase 3)
 
 def check_ema50_proximity(current_close: float, ema50: float) -> bool:
     """Price within 1.5% of H1 EMA50 (Phase 3 — widened from 0.5%)."""
@@ -259,13 +259,12 @@ def check_ema50_proximity(current_close: float, ema50: float) -> bool:
 def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
                      news_clear: bool, positions: list | None = None) -> dict:
     """
-    Simplified BUY conditions (Phase 2).
+    BUY conditions (Phase 4 — no trend filter).
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
-    The 'checks' dict shows pass/fail for every condition — used for diagnostic logging.
+    H4 trend is passed through for context/logging only — never blocks a trade.
     """
     mode = get_market_mode(h4_trend)
     ema50 = h1_indicators.get("ema_50")
-    ema200_h1 = h1_indicators.get("ema_200")
     rsi = h1_indicators.get("rsi_14")
     close = h1_indicators.get("current_close")
 
@@ -275,7 +274,6 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
     ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
     checks = {
-        "trend_ok":    mode == "range" or h4_trend == "uptrend",
         "rsi_ok":      25 <= rsi <= 65,
         "ema50_ok":    ema50_dist_pct <= 1.5,
         "news_ok":     news_clear,
@@ -283,8 +281,6 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
     }
 
     reasons = []
-    if not checks["trend_ok"]:
-        reasons.append(f"Trend is {h4_trend} (need uptrend or range for BUY)")
     if not checks["rsi_ok"]:
         reasons.append(f"RSI {rsi:.1f} outside buy zone 25-65")
     if not checks["ema50_ok"]:
@@ -302,8 +298,9 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
 def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
                       news_clear: bool, positions: list | None = None) -> dict:
     """
-    Simplified SELL conditions (Phase 2).
+    SELL conditions (Phase 4 — no trend filter).
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
+    H4 trend is passed through for context/logging only — never blocks a trade.
     """
     mode = get_market_mode(h4_trend)
     ema50 = h1_indicators.get("ema_50")
@@ -316,7 +313,6 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
     ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
     checks = {
-        "trend_ok":     mode == "range" or h4_trend == "downtrend",
         "rsi_ok":       35 <= rsi <= 75,
         "ema50_ok":     ema50_dist_pct <= 1.5,
         "news_ok":      news_clear,
@@ -324,8 +320,6 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
     }
 
     reasons = []
-    if not checks["trend_ok"]:
-        reasons.append(f"Trend is {h4_trend} (need downtrend or range for SELL)")
     if not checks["rsi_ok"]:
         reasons.append(f"RSI {rsi:.1f} outside sell zone 35-75")
     if not checks["ema50_ok"]:
@@ -346,8 +340,8 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
 
 def calculate_sl_tp(direction: str, entry_price: float, atr: float,
                     ema50: float) -> dict:
-    """Calculate stop-loss and take-profit levels."""
-    sl_distance = 1.5 * atr
+    """Calculate stop-loss and take-profit levels. Phase 4: SL=0.75×ATR, TP=2.5×ATR (R:R ≈ 1:3.3)."""
+    sl_distance = 0.75 * atr
     tp_distance = 2.5 * atr
 
     if direction == "buy":
@@ -355,13 +349,13 @@ def calculate_sl_tp(direction: str, entry_price: float, atr: float,
         tp = entry_price + tp_distance
         # SL must be below EMA50 for a buy
         if sl >= ema50:
-            sl = ema50 - (0.1 * atr)  # Just beyond EMA50
+            sl = ema50 - (0.05 * atr)  # Just beyond EMA50
     else:
         sl = entry_price + sl_distance
         tp = entry_price - tp_distance
         # SL must be above EMA50 for a sell
         if sl <= ema50:
-            sl = ema50 + (0.1 * atr)
+            sl = ema50 + (0.05 * atr)
 
     return {
         "stop_loss": round(sl, 5),
@@ -444,21 +438,8 @@ def check_weekend_close(positions: list[dict], atr: float,
 
 
 def check_cooldown(last_sl_hit_time: str | None, utc_now: datetime | None = None) -> bool:
-    """Check if cooldown period (1 hour) has passed after an SL hit (Phase 3 — reduced from 2h)."""
-    if last_sl_hit_time is None:
-        return True  # No cooldown active
-
-    if utc_now is None:
-        utc_now = datetime.now(timezone.utc)
-
-    try:
-        sl_time = datetime.fromisoformat(last_sl_hit_time)
-        if sl_time.tzinfo is None:
-            sl_time = sl_time.replace(tzinfo=timezone.utc)
-        elapsed = utc_now - sl_time
-        return elapsed >= timedelta(hours=1)
-    except (ValueError, TypeError):
-        return True
+    """Phase 4: cooldown removed — always returns True (re-enter immediately after SL hit)."""
+    return True
 
 
 # =============================================================================

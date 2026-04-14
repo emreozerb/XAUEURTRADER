@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from .indicators import get_full_series
 from .strategy import (
     identify_trend,
-    calculate_sl_tp, check_cooldown, get_market_mode,
+    calculate_sl_tp, get_market_mode,
     check_ema50_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
 )
 
@@ -125,20 +125,11 @@ def run_backtest(m15_candles: pd.DataFrame, h4_candles: pd.DataFrame,
 
             continue  # Don't open new trades while one is open
 
-        # Skip if max positions reached or in cooldown
-        if consecutive_losses >= 3:
-            if not check_cooldown(last_sl_time,
-                                  ts.to_pydatetime().replace(tzinfo=timezone.utc) if hasattr(ts, 'to_pydatetime') else ts):
-                continue
-            consecutive_losses = 0
+        # Phase 4: no trend filter, no session filter, no cooldown — trades 24/5 in any direction
 
-        # Phase 3: no session filter — trades 24/5
-
-        # Check BUY signal (Phase 3: EMA50 1.5%, RSI 25-65, no MACD, no session)
-        buy_ok = False
-        if mode == "range" or trend == "uptrend":
-            buy_ok = (check_ema50_proximity(close, m15_ema50)
-                      and check_rsi_buy_zone(m15_rsi))
+        # Check BUY signal (Phase 4: EMA50 1.5%, RSI 25-65, no trend filter)
+        buy_ok = (check_ema50_proximity(close, m15_ema50)
+                  and check_rsi_buy_zone(m15_rsi))
 
         if buy_ok:
             sl_tp = calculate_sl_tp("buy", close, m15_atr, m15_ema50)
@@ -153,12 +144,10 @@ def run_backtest(m15_candles: pd.DataFrame, h4_candles: pd.DataFrame,
                     "lot_size": lot,
                 }
 
-        # Check SELL signal (Phase 3: EMA50 1.5%, RSI 35-75, no MACD, no session)
+        # Check SELL signal (Phase 4: EMA50 1.5%, RSI 35-75, no trend filter)
         if not buy_ok and open_trade is None:
-            sell_ok = False
-            if mode == "range" or trend == "downtrend":
-                sell_ok = (check_ema50_proximity(close, m15_ema50)
-                           and check_rsi_sell_zone(m15_rsi))
+            sell_ok = (check_ema50_proximity(close, m15_ema50)
+                       and check_rsi_sell_zone(m15_rsi))
 
             if sell_ok:
                 sl_tp = calculate_sl_tp("sell", close, m15_atr, m15_ema50)
