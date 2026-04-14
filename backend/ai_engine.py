@@ -17,47 +17,43 @@ logger = logging.getLogger(__name__)
 #   - [single confidence threshold of 70%]
 # """
 
-SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using a dual-mode strategy. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
+SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using an aggressive 24/5 strategy. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
 
-DUAL-MODE STRATEGY (you must follow these strictly):
+PHASE 3 STRATEGY (follow these rules strictly):
 
-MODE DETECTION:
-- The system tells you which mode is active: TREND or RANGE.
-- TREND MODE: 4H EMA50 and EMA200 are clearly separated (>0.3% of price). Trade pullbacks in the direction of the trend.
-  - Only BUY in an uptrend (4H EMA 50 > EMA 200)
-  - Only SELL in a downtrend (4H EMA 50 < EMA 200)
-- RANGE MODE: 4H EMA50 and EMA200 are close together (<=0.3% of price). Trade mean reversion.
-  - Both BUY and SELL are allowed based on RSI zone and MACD confirmation.
+MODE DETECTION (4H chart):
+- TREND MODE: 4H EMA50 and EMA200 are clearly separated (>0.3% of price).
+  - Only BUY in an uptrend (EMA50 > EMA200)
+  - Only SELL in a downtrend (EMA50 < EMA200)
+- RANGE MODE: 4H EMA50 and EMA200 within 0.3% of price.
+  - Both BUY and SELL are allowed based on RSI zone.
 
 ENTRY CONDITIONS (all must be met):
-1. Price is within 0.15% of EMA20 on H1 (proximity confirmed — see ema20_proximity field)
-2. RSI zone:
-   - BUY: RSI 14 between 25 and 42 (see rsi_zone field)
-   - SELL: RSI 14 between 58 and 75
-3. MACD histogram (12, 26, 9):
-   - BUY: histogram turning positive (current > previous — see macd_direction field)
-   - SELL: histogram turning negative (current < previous)
-   - In TREND mode, MACD is a bonus confirmation. In RANGE mode, MACD is required.
-4. No high-impact news within 30 min before / 15 min after
-5. Valid session: Early London (06-08 UTC), London (08-16 UTC), or New York (12-21 UTC)
+1. EMA50 proximity: price is within 1.5% of H1 EMA50 (see ema50_proximity field)
+2. RSI zone (H1 RSI 14):
+   - BUY:  RSI between 25 and 65
+   - SELL: RSI between 35 and 75
+3. No high-impact news within 30 min before / 15 min after (see upcoming_events)
+4. No duplicate position in the same direction already open
 
-RISK MANAGEMENT (unchanged):
+SESSION: No session restriction — trade all sessions 24/5 (session shown for context only).
+
+RISK MANAGEMENT:
 - Stop-loss: 1.5x ATR from entry
-- Take-profit: 2.5x ATR from entry, then trail at 1x ATR below/above EMA 50
-- No trading during Asian session unless confidence > 85
+- Take-profit: 2.5x ATR from entry
+- Trailing stop: activates after 1.5x ATR profit, trails at 1x ATR below/above H1 EMA50
+- Maximum drawdown: 10% of balance — bot stops if exceeded (enforced by system)
 
-CONFIDENCE THRESHOLDS:
-- TREND mode: minimum 70% to recommend a trade
-- RANGE mode: minimum 60% to recommend a trade
+CONFIDENCE THRESHOLD: minimum 45% to recommend a trade. Express genuine confidence — do not inflate scores.
 
-ANALYSIS FRAMEWORK (evaluate each point):
-1. Which mode is active (Trend or Range) and is the setup appropriate for that mode?
-2. Is price near EMA20? Is the RSI in the correct zone?
-3. Is the MACD histogram confirming the direction?
-4. Is there a news event that could invalidate this setup?
-5. Is the risk-reward ratio at least 1:1.67?
-6. Does the current session support this trade?
-7. What do recent trade results suggest about current market conditions?
+ANALYSIS FRAMEWORK (evaluate each point explicitly):
+1. What mode is active (Trend or Range)? Is the direction correct for this mode?
+2. Is price within 1.5% of H1 EMA50?
+3. Is RSI in the correct zone (25-65 buy / 35-75 sell)?
+4. Are any high-impact news events nearby?
+5. Is there already an open position in the same direction?
+6. Is the risk-reward at least 1:1.67 (SL 1.5x ATR, TP 2.5x ATR)?
+7. What do recent trade results suggest about current conditions?
 8. For open positions: should the trailing stop be updated? Should the position be closed early?
 
 In your reasoning, EXPLICITLY STATE which conditions are met and which are not.
@@ -230,9 +226,8 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
                           risk_pct: float, max_lot: float,
                           market_mode: str = "trend",
                           session_display: str = "",
-                          ema20_proximity: bool = False,
-                          rsi_zone: str = "neutral",
-                          macd_direction: str = "neutral") -> dict:
+                          ema50_proximity: bool = False,
+                          rsi_zone: str = "neutral") -> dict:
         """Build the data packet to send to Claude."""
         return {
             "current_price": price,
@@ -245,9 +240,8 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
             "trend": trend,
             "market_mode": market_mode,
             "active_session": session_display or session,
-            "ema20_proximity": ema20_proximity,
+            "ema50_proximity": ema50_proximity,
             "rsi_zone": rsi_zone,
-            "macd_direction": macd_direction,
             "account": account,
             "open_positions": positions,
             "upcoming_events": upcoming_events,

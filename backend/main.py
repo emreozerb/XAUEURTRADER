@@ -17,7 +17,7 @@ from .database import (
 from .mt5_connector import mt5_connector
 from .indicators import calculate_indicators
 from .strategy import (
-    identify_trend, get_current_session, is_trading_session,
+    identify_trend, get_current_session,
     check_buy_signal, check_sell_signal, check_ema50_proximity,
     calculate_sl_tp, check_weekend_close, check_cooldown,
     get_market_mode, get_session_display_name, get_test_signal,
@@ -433,9 +433,9 @@ async def _run_analysis_cycle(h1_candles):
         await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
         return
 
-    # Consecutive losses — soft pause for 4 hours
-    if bot_config.consecutive_losses >= 3 and bot_config.bot_status != "paused":
-        await soft_pause(4, f"{bot_config.consecutive_losses} consecutive losses", "risk")
+    # Consecutive losses — soft pause for 2 hours
+    if bot_config.consecutive_losses >= 5 and bot_config.bot_status != "paused":
+        await soft_pause(2, f"{bot_config.consecutive_losses} consecutive losses — paused for 2 hours", "risk")
         return
 
     # Inactivity — soft pause for 1 hour if no user interaction in 24h
@@ -621,7 +621,7 @@ async def _run_analysis_cycle(h1_candles):
     action = ai_result["action"]
 
     # Handle AI actions
-    MIN_CONFIDENCE = 60  # Flat threshold — simplified strategy, no mode split
+    MIN_CONFIDENCE = 45  # Phase 3 — lowered from 60%, flat regardless of mode/session
 
     if action in ("buy", "sell"):
         # Check cooldown
@@ -630,16 +630,10 @@ async def _run_analysis_cycle(h1_candles):
             bot_config.bot_status = "running"
             return
 
-        # Flat 60% confidence threshold
+        # Flat 45% confidence threshold
         if confidence < MIN_CONFIDENCE:
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}_min_{MIN_CONFIDENCE}"})
             logger.info(f"AI confidence {confidence}% below threshold {MIN_CONFIDENCE}% — skipping")
-            bot_config.bot_status = "running"
-            return
-
-        # Asian session override
-        if session == "asian" and confidence <= 85:
-            await log_analysis({**analysis_data, "executed": 0, "skipped_reason": "asian_session_low_conf"})
             bot_config.bot_status = "running"
             return
 

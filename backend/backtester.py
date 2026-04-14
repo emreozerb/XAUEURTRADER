@@ -6,10 +6,9 @@ from datetime import datetime, timezone, timedelta
 
 from .indicators import get_full_series
 from .strategy import (
-    identify_trend, get_current_session, is_trading_session,
+    identify_trend, get_current_session,
     calculate_sl_tp, check_cooldown, get_market_mode,
-    check_ema20_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
-    check_macd_turning_positive, check_macd_turning_negative,
+    check_ema50_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,15 +58,11 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         low = candle["low"]
 
         # Get H1 indicators at this point
-        h1_ema20 = _safe_get(h1_series["ema_20"], i)
         h1_ema50 = _safe_get(h1_series["ema_50"], i)
-        h1_ema200 = _safe_get(h1_series["ema_200"], i)
         h1_atr = _safe_get(h1_series["atr_14"], i)
         h1_rsi = _safe_get(h1_series["rsi_14"], i)
-        h1_macd_hist = _safe_get(h1_series["macd_histogram"], i)
-        h1_macd_hist_prev = _safe_get(h1_series["macd_histogram"], i - 1)
 
-        if any(v is None for v in [h1_ema20, h1_ema50, h1_atr, h1_rsi]):
+        if any(v is None for v in [h1_ema50, h1_atr, h1_rsi]):
             continue
 
         # Find corresponding H4 candle
@@ -138,21 +133,13 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
                 continue
             consecutive_losses = 0
 
-        if not is_trading_session(session):
-            continue
+        # Phase 3: no session filter — trades 24/5
 
-        # Check BUY signal (dual-mode strategy)
+        # Check BUY signal (Phase 3: EMA50 1.5%, RSI 25-65, no MACD, no session)
         buy_ok = False
-        if mode == "trend" and trend == "uptrend":
-            # Trend mode: EMA20 proximity + RSI buy zone
-            buy_ok = (check_ema20_proximity(close, h1_ema20)
+        if mode == "range" or trend == "uptrend":
+            buy_ok = (check_ema50_proximity(close, h1_ema50)
                       and check_rsi_buy_zone(h1_rsi))
-        elif mode == "range":
-            # Range mode: EMA20 proximity + RSI buy zone + MACD turning positive
-            buy_ok = (check_ema20_proximity(close, h1_ema20)
-                      and check_rsi_buy_zone(h1_rsi)
-                      and h1_macd_hist is not None and h1_macd_hist_prev is not None
-                      and check_macd_turning_positive(h1_macd_hist, h1_macd_hist_prev))
 
         if buy_ok:
             sl_tp = calculate_sl_tp("buy", close, h1_atr, h1_ema50)
@@ -167,17 +154,12 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
                     "lot_size": lot,
                 }
 
-        # Check SELL signal (dual-mode strategy)
+        # Check SELL signal (Phase 3: EMA50 1.5%, RSI 35-75, no MACD, no session)
         if not buy_ok and open_trade is None:
             sell_ok = False
-            if mode == "trend" and trend == "downtrend":
-                sell_ok = (check_ema20_proximity(close, h1_ema20)
+            if mode == "range" or trend == "downtrend":
+                sell_ok = (check_ema50_proximity(close, h1_ema50)
                            and check_rsi_sell_zone(h1_rsi))
-            elif mode == "range":
-                sell_ok = (check_ema20_proximity(close, h1_ema20)
-                           and check_rsi_sell_zone(h1_rsi)
-                           and h1_macd_hist is not None and h1_macd_hist_prev is not None
-                           and check_macd_turning_negative(h1_macd_hist, h1_macd_hist_prev))
 
             if sell_ok:
                 sl_tp = calculate_sl_tp("sell", close, h1_atr, h1_ema50)

@@ -79,10 +79,8 @@ def get_market_mode(trend: str) -> str:
 
 
 def get_confidence_threshold(mode: str) -> int:
-    """Get minimum confidence threshold based on market mode."""
-    if mode == "trend":
-        return 70
-    return 60  # range mode
+    """Get minimum confidence threshold. Phase 3: flat 45% regardless of mode."""
+    return 45
 
 
 # =============================================================================
@@ -128,7 +126,7 @@ def get_session_display_name(session: str) -> str:
 # =============================================================================
 
 def check_ema20_proximity(current_close: float, ema20: float) -> bool:
-    """Check if price is within 0.15% of EMA20."""
+    """Check if price is within 0.15% of EMA20. (Legacy — kept for rollback reference.)"""
     if ema20 == 0:
         return False
     distance_pct = abs(current_close - ema20) / ema20 * 100
@@ -136,13 +134,13 @@ def check_ema20_proximity(current_close: float, ema20: float) -> bool:
 
 
 def check_rsi_buy_zone(rsi: float) -> bool:
-    """RSI between 25 and 42 = buy zone."""
-    return 25 <= rsi <= 42
+    """RSI between 25 and 65 = buy zone (Phase 3 — widened)."""
+    return 25 <= rsi <= 65
 
 
 def check_rsi_sell_zone(rsi: float) -> bool:
-    """RSI between 58 and 75 = sell zone."""
-    return 58 <= rsi <= 75
+    """RSI between 35 and 75 = sell zone (Phase 3 — widened)."""
+    return 35 <= rsi <= 75
 
 
 def check_macd_turning_positive(macd_hist: float, macd_hist_prev: float) -> bool:
@@ -238,23 +236,24 @@ def get_test_signal() -> dict:
 
 
 # =============================================================================
-# SIMPLIFIED STRATEGY (Phase 2)
+# SIMPLIFIED STRATEGY (Phase 3 — Aggressive)
 # =============================================================================
-# What changed vs dual-mode and why:
-#   - EMA proximity: EMA50 at 0.5% (was EMA20 at 0.15%) — fires far more often
-#   - RSI buy zone: 30-55 (was 25-42) — captures more of the oversold recovery
-#   - RSI sell zone: 45-70 (was 58-75) — catches overbought turns earlier
-#   - MACD: removed — was killing too many valid setups
-#   - Trend condition: EMA50 > EMA200 for buys, EMA50 < EMA200 for sells,
-#     OR range mode (EMA separation < 0.3%) allows both directions
-#   - Duplicate position filter: no new trade if one already open in same direction
-#   - Flat 60% AI confidence threshold regardless of mode (was 70% trend / 60% range)
+# Phase 2 → Phase 3 changes:
+#   - Session filter: REMOVED — trades 24/5, all sessions
+#   - EMA50 proximity: 1.5% (was 0.5%) — fires far more often
+#   - RSI buy zone: 25-65 (was 30-55) — covers nearly the full non-overbought range
+#   - RSI sell zone: 35-75 (was 45-70) — covers nearly the full non-oversold range
+#   - AI confidence threshold: 45% flat (was 60%)
+#   - SL-hit cooldown: 1 hour (was 2 hours)
+#   - Consecutive-loss pause: triggers at 5 losses (was 3), pauses 2 hours (was 4)
+#   - MACD: still removed (was removed in Phase 2)
+#   - Trend/direction rules and duplicate position filter: unchanged
 
 def check_ema50_proximity(current_close: float, ema50: float) -> bool:
-    """Price within 0.5% of H1 EMA50."""
+    """Price within 1.5% of H1 EMA50 (Phase 3 — widened from 0.5%)."""
     if not ema50:
         return False
-    return abs(current_close - ema50) / ema50 * 100 <= 0.5
+    return abs(current_close - ema50) / ema50 * 100 <= 1.5
 
 
 def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
@@ -277,9 +276,8 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
 
     checks = {
         "trend_ok":    mode == "range" or h4_trend == "uptrend",
-        "rsi_ok":      30 <= rsi <= 55,
-        "ema50_ok":    ema50_dist_pct <= 0.5,
-        "session_ok":  is_trading_session(session),
+        "rsi_ok":      25 <= rsi <= 65,
+        "ema50_ok":    ema50_dist_pct <= 1.5,
         "news_ok":     news_clear,
         "no_dup_long": not any(p.get("direction") == "buy" for p in (positions or [])),
     }
@@ -288,11 +286,9 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
     if not checks["trend_ok"]:
         reasons.append(f"Trend is {h4_trend} (need uptrend or range for BUY)")
     if not checks["rsi_ok"]:
-        reasons.append(f"RSI {rsi:.1f} outside buy zone 30-55")
+        reasons.append(f"RSI {rsi:.1f} outside buy zone 25-65")
     if not checks["ema50_ok"]:
-        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 0.5%)")
-    if not checks["session_ok"]:
-        reasons.append(f"Outside trading session ({session})")
+        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
     if not checks["no_dup_long"]:
@@ -321,9 +317,8 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
 
     checks = {
         "trend_ok":     mode == "range" or h4_trend == "downtrend",
-        "rsi_ok":       45 <= rsi <= 70,
-        "ema50_ok":     ema50_dist_pct <= 0.5,
-        "session_ok":   is_trading_session(session),
+        "rsi_ok":       35 <= rsi <= 75,
+        "ema50_ok":     ema50_dist_pct <= 1.5,
         "news_ok":      news_clear,
         "no_dup_short": not any(p.get("direction") == "sell" for p in (positions or [])),
     }
@@ -332,11 +327,9 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
     if not checks["trend_ok"]:
         reasons.append(f"Trend is {h4_trend} (need downtrend or range for SELL)")
     if not checks["rsi_ok"]:
-        reasons.append(f"RSI {rsi:.1f} outside sell zone 45-70")
+        reasons.append(f"RSI {rsi:.1f} outside sell zone 35-75")
     if not checks["ema50_ok"]:
-        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 0.5%)")
-    if not checks["session_ok"]:
-        reasons.append(f"Outside trading session ({session})")
+        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
     if not checks["no_dup_short"]:
@@ -451,7 +444,7 @@ def check_weekend_close(positions: list[dict], atr: float,
 
 
 def check_cooldown(last_sl_hit_time: str | None, utc_now: datetime | None = None) -> bool:
-    """Check if cooldown period (2 H1 candles = 2 hours) has passed."""
+    """Check if cooldown period (1 hour) has passed after an SL hit (Phase 3 — reduced from 2h)."""
     if last_sl_hit_time is None:
         return True  # No cooldown active
 
@@ -463,7 +456,7 @@ def check_cooldown(last_sl_hit_time: str | None, utc_now: datetime | None = None
         if sl_time.tzinfo is None:
             sl_time = sl_time.replace(tzinfo=timezone.utc)
         elapsed = utc_now - sl_time
-        return elapsed >= timedelta(hours=2)
+        return elapsed >= timedelta(hours=1)
     except (ValueError, TypeError):
         return True
 
