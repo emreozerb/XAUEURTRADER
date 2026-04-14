@@ -154,9 +154,9 @@ class MT5Connector:
             return result
 
     def get_candles(self, timeframe: str, count: int) -> pd.DataFrame | None:
-        """Get OHLCV candles. timeframe: 'H1' or 'H4'."""
+        """Get OHLCV candles. timeframe: 'M15', 'H1', or 'H4'."""
         with _mt5_lock:
-            tf_map = {"H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
+            tf_map = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
             tf = tf_map.get(timeframe)
             if tf is None:
                 return None
@@ -176,7 +176,7 @@ class MT5Connector:
     def get_candles_range(self, timeframe: str, date_from: datetime, date_to: datetime) -> pd.DataFrame | None:
         """Get historical candles for backtesting."""
         with _mt5_lock:
-            tf_map = {"H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
+            tf_map = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
             tf = tf_map.get(timeframe)
             if tf is None:
                 return None

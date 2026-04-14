@@ -21,6 +21,10 @@ SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using an aggres
 
 PHASE 3 STRATEGY (follow these rules strictly):
 
+TIMEFRAMES:
+- Signals are evaluated on M15 candle closes (15-minute chart)
+- Trend detection uses the 4H chart (H4 EMA50 vs EMA200)
+
 MODE DETECTION (4H chart):
 - TREND MODE: 4H EMA50 and EMA200 are clearly separated (>0.3% of price).
   - Only BUY in an uptrend (EMA50 > EMA200)
@@ -29,8 +33,8 @@ MODE DETECTION (4H chart):
   - Both BUY and SELL are allowed based on RSI zone.
 
 ENTRY CONDITIONS (all must be met):
-1. EMA50 proximity: price is within 1.5% of H1 EMA50 (see ema50_proximity field)
-2. RSI zone (H1 RSI 14):
+1. EMA50 proximity: price is within 1.5% of M15 EMA50 (see ema50_proximity field)
+2. RSI zone (M15 RSI 14):
    - BUY:  RSI between 25 and 65
    - SELL: RSI between 35 and 75
 3. No high-impact news within 30 min before / 15 min after (see upcoming_events)
@@ -41,15 +45,15 @@ SESSION: No session restriction — trade all sessions 24/5 (session shown for c
 RISK MANAGEMENT:
 - Stop-loss: 1.5x ATR from entry
 - Take-profit: 2.5x ATR from entry
-- Trailing stop: activates after 1.5x ATR profit, trails at 1x ATR below/above H1 EMA50
+- Trailing stop: activates after 1.5x ATR profit, trails at 1x ATR below/above M15 EMA50
 - Maximum drawdown: 10% of balance — bot stops if exceeded (enforced by system)
 
 CONFIDENCE THRESHOLD: minimum 45% to recommend a trade. Express genuine confidence — do not inflate scores.
 
 ANALYSIS FRAMEWORK (evaluate each point explicitly):
 1. What mode is active (Trend or Range)? Is the direction correct for this mode?
-2. Is price within 1.5% of H1 EMA50?
-3. Is RSI in the correct zone (25-65 buy / 35-75 sell)?
+2. Is price within 1.5% of M15 EMA50?
+3. Is M15 RSI in the correct zone (25-65 buy / 35-75 sell)?
 4. Are any high-impact news events nearby?
 5. Is there already an open position in the same direction?
 6. Is the risk-reward at least 1:1.67 (SL 1.5x ATR, TP 2.5x ATR)?
@@ -116,11 +120,11 @@ class AIEngine:
             self.last_error_reason = "AI engine not initialised — API key missing."
             return None
 
-        user_message = f"""Current market data for XAUEUR analysis:
+        user_message = f"""Current M15 candle close — XAUEUR market data:
 
 {json.dumps(data_packet, indent=2, default=str)}
 
-Analyze this data according to the dual-mode strategy rules and provide your trading decision."""
+Analyze this data according to the Phase 3 strategy rules and provide your trading decision."""
 
         try:
             response = self.client.messages.create(
@@ -218,8 +222,8 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
             self.consecutive_failures += 1
             return None
 
-    def build_data_packet(self, price: dict, h1_candles_json: list,
-                          h4_candles_json: list, h1_indicators: dict,
+    def build_data_packet(self, price: dict, m15_candles_json: list,
+                          h4_candles_json: list, m15_indicators: dict,
                           h4_indicators: dict, trend: str, account: dict,
                           positions: list, upcoming_events: list,
                           session: str, last_trades: list,
@@ -231,10 +235,10 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
         """Build the data packet to send to Claude."""
         return {
             "current_price": price,
-            "h1_candles": f"[{len(h1_candles_json)} candles, latest: {h1_candles_json[-1] if h1_candles_json else 'none'}]",
+            "m15_candles": f"[{len(m15_candles_json)} candles, latest: {m15_candles_json[-1] if m15_candles_json else 'none'}]",
             "h4_candles": f"[{len(h4_candles_json)} candles, latest: {h4_candles_json[-1] if h4_candles_json else 'none'}]",
             "indicators": {
-                "h1": h1_indicators,
+                "m15": m15_indicators,
                 "h4": h4_indicators,
             },
             "trend": trend,

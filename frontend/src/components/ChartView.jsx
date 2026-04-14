@@ -73,7 +73,7 @@ export default function ChartView() {
 
     try {
       const [candleRes, tradeRes] = await Promise.all([
-        fetch(`${API}/api/candles?timeframe=H1&count=500`),
+        fetch(`${API}/api/candles?timeframe=M15&count=800`),
         fetch(`${API}/api/chart/trades`),
       ]);
 
@@ -149,7 +149,7 @@ export default function ChartView() {
   return (
     <div className="chart-view">
       <div className="chart-header">
-        <h3>XAUEUR H1 Chart</h3>
+        <h3>XAUEUR M15 Chart</h3>
         <div className="chart-controls">
           {tradeCount > 0 && (
             <span className="chart-trade-count">{tradeCount} trades</span>

@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from .indicators import get_full_series
 from .strategy import (
-    identify_trend, get_current_session,
+    identify_trend,
     calculate_sl_tp, check_cooldown, get_market_mode,
     check_ema50_proximity, check_rsi_buy_zone, check_rsi_sell_zone,
 )
@@ -22,7 +22,7 @@ class BacktestResult:
         self.final_balance: float = 0
 
 
-def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
+def run_backtest(m15_candles: pd.DataFrame, h4_candles: pd.DataFrame,
                  starting_balance: float, risk_pct: float,
                  max_positions: int = 1, pip_value: float = 1.0,
                  tick_size: float = 0.01) -> dict:
@@ -30,39 +30,39 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
     Run a backtest on historical data using pure rule-based logic.
     No Claude API calls.
     """
-    if h1_candles is None or h4_candles is None:
+    if m15_candles is None or h4_candles is None:
         return {"error": "Insufficient historical data."}
 
-    if len(h1_candles) < 200 or len(h4_candles) < 50:
-        return {"error": "Need at least 200 H1 candles and 50 H4 candles."}
+    if len(m15_candles) < 300 or len(h4_candles) < 50:
+        return {"error": "Need at least 300 M15 candles and 50 H4 candles."}
 
     # Calculate full indicator series
-    h1_series = get_full_series(h1_candles)
+    m15_series = get_full_series(m15_candles)
     h4_series = get_full_series(h4_candles)
 
     balance = starting_balance
-    equity_curve = [{"time": h1_candles["timestamp"].iloc[0].isoformat(), "balance": balance}]
+    equity_curve = [{"time": m15_candles["timestamp"].iloc[0].isoformat(), "balance": balance}]
     trades = []
     open_trade = None
     last_sl_time = None
     consecutive_losses = 0
 
-    # Start from index 200 to ensure all indicators have values
-    start_idx = 200
+    # Start from index 300 to ensure all indicators have values (EMA200 needs ~300 candles)
+    start_idx = 300
 
-    for i in range(start_idx, len(h1_candles)):
-        candle = h1_candles.iloc[i]
+    for i in range(start_idx, len(m15_candles)):
+        candle = m15_candles.iloc[i]
         ts = candle["timestamp"]
         close = candle["close"]
         high = candle["high"]
         low = candle["low"]
 
-        # Get H1 indicators at this point
-        h1_ema50 = _safe_get(h1_series["ema_50"], i)
-        h1_atr = _safe_get(h1_series["atr_14"], i)
-        h1_rsi = _safe_get(h1_series["rsi_14"], i)
+        # Get M15 indicators at this point
+        m15_ema50 = _safe_get(m15_series["ema_50"], i)
+        m15_atr = _safe_get(m15_series["atr_14"], i)
+        m15_rsi = _safe_get(m15_series["rsi_14"], i)
 
-        if any(v is None for v in [h1_ema50, h1_atr, h1_rsi]):
+        if any(v is None for v in [m15_ema50, m15_atr, m15_rsi]):
             continue
 
         # Find corresponding H4 candle
@@ -81,7 +81,6 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         h4_indicators = {"ema_50": h4_ema50, "ema_200": h4_ema200, "atr_14": h4_atr}
         trend = identify_trend(h4_indicators, current_price=close)
         mode = get_market_mode(trend)
-        session = get_current_session(ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts)
 
         # Check open trade for SL/TP hit
         if open_trade is not None:
@@ -114,13 +113,13 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
 
             # Update trailing stop
             profit_dist = abs(close - open_trade["entry_price"])
-            if profit_dist > 1.5 * h1_atr:
+            if profit_dist > 1.5 * m15_atr:
                 if open_trade["direction"] == "buy":
-                    new_sl = h1_ema50 - h1_atr
+                    new_sl = m15_ema50 - m15_atr
                     if new_sl > open_trade["stop_loss"]:
                         open_trade["stop_loss"] = round(new_sl, 5)
                 else:
-                    new_sl = h1_ema50 + h1_atr
+                    new_sl = m15_ema50 + m15_atr
                     if new_sl < open_trade["stop_loss"]:
                         open_trade["stop_loss"] = round(new_sl, 5)
 
@@ -138,11 +137,11 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         # Check BUY signal (Phase 3: EMA50 1.5%, RSI 25-65, no MACD, no session)
         buy_ok = False
         if mode == "range" or trend == "uptrend":
-            buy_ok = (check_ema50_proximity(close, h1_ema50)
-                      and check_rsi_buy_zone(h1_rsi))
+            buy_ok = (check_ema50_proximity(close, m15_ema50)
+                      and check_rsi_buy_zone(m15_rsi))
 
         if buy_ok:
-            sl_tp = calculate_sl_tp("buy", close, h1_atr, h1_ema50)
+            sl_tp = calculate_sl_tp("buy", close, m15_atr, m15_ema50)
             lot = _calc_lot(balance, risk_pct, sl_tp["sl_distance"], pip_value, tick_size)
             if lot > 0:
                 open_trade = {
@@ -158,11 +157,11 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         if not buy_ok and open_trade is None:
             sell_ok = False
             if mode == "range" or trend == "downtrend":
-                sell_ok = (check_ema50_proximity(close, h1_ema50)
-                           and check_rsi_sell_zone(h1_rsi))
+                sell_ok = (check_ema50_proximity(close, m15_ema50)
+                           and check_rsi_sell_zone(m15_rsi))
 
             if sell_ok:
-                sl_tp = calculate_sl_tp("sell", close, h1_atr, h1_ema50)
+                sl_tp = calculate_sl_tp("sell", close, m15_atr, m15_ema50)
                 lot = _calc_lot(balance, risk_pct, sl_tp["sl_distance"], pip_value, tick_size)
                 if lot > 0:
                     open_trade = {
@@ -176,14 +175,14 @@ def run_backtest(h1_candles: pd.DataFrame, h4_candles: pd.DataFrame,
 
     # Close any remaining open trade at last price
     if open_trade is not None:
-        last_close = h1_candles["close"].iloc[-1]
+        last_close = m15_candles["close"].iloc[-1]
         pnl = _calc_pnl(open_trade, last_close, pip_value, tick_size)
         balance += pnl
         trades.append({
             **open_trade,
-            "exit_timestamp": h1_candles["timestamp"].iloc[-1].isoformat()
-            if hasattr(h1_candles["timestamp"].iloc[-1], 'isoformat')
-            else str(h1_candles["timestamp"].iloc[-1]),
+            "exit_timestamp": m15_candles["timestamp"].iloc[-1].isoformat()
+            if hasattr(m15_candles["timestamp"].iloc[-1], 'isoformat')
+            else str(m15_candles["timestamp"].iloc[-1]),
             "exit_price": last_close,
             "result": "win" if pnl > 0 else "loss",
             "pips": round((last_close - open_trade["entry_price"])

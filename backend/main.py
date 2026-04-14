@@ -264,15 +264,15 @@ async def run_backtest_endpoint(config: BacktestConfig):
     now = datetime.now(timezone.utc)
     from_date = now - timedelta(days=config.period_months * 30)
 
-    h1_candles = mt5_connector.get_candles_range("H1", from_date, now)
+    m15_candles = mt5_connector.get_candles_range("M15", from_date, now)
     h4_candles = mt5_connector.get_candles_range("H4", from_date, now)
 
-    if h1_candles is None or h4_candles is None:
+    if m15_candles is None or h4_candles is None:
         raise HTTPException(400, "Could not fetch historical data from MT5.")
 
     symbol_info = mt5_connector.symbol_info or {}
     result = run_backtest(
-        h1_candles=h1_candles,
+        m15_candles=m15_candles,
         h4_candles=h4_candles,
         starting_balance=config.starting_balance,
         risk_pct=bot_config.validate_risk(),
@@ -290,7 +290,7 @@ async def get_calendar():
 
 
 @app.get("/api/candles")
-async def get_candles(timeframe: str = "H1", count: int = 500):
+async def get_candles(timeframe: str = "M15", count: int = 800):
     """Fetch OHLCV candles from MT5 for the chart view."""
     if not mt5_connector.connected:
         raise HTTPException(400, "MT5 not connected.")
@@ -350,7 +350,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ─── Background loops ──────────────────────────────────────────────
 
 async def _analysis_loop():
-    """Main analysis loop — triggers every H1 candle close."""
+    """Main analysis loop — triggers every M15 candle close."""
     last_candle_time = None
     logger.info("Analysis loop started.")
 
@@ -378,20 +378,20 @@ async def _analysis_loop():
                 else:
                     continue
 
-            # Get H1 candles and check for new candle
-            h1_candles = mt5_connector.get_candles("H1", 100)
-            if h1_candles is None or h1_candles.empty:
+            # Get M15 candles and check for new candle
+            m15_candles = mt5_connector.get_candles("M15", 300)
+            if m15_candles is None or m15_candles.empty:
                 continue
 
-            current_candle_time = h1_candles["timestamp"].iloc[-1]
+            current_candle_time = m15_candles["timestamp"].iloc[-1]
             if last_candle_time is not None and current_candle_time <= last_candle_time:
                 continue  # No new candle
 
             last_candle_time = current_candle_time
-            logger.info(f"New H1 candle detected: {current_candle_time}")
+            logger.info(f"New M15 candle detected: {current_candle_time}")
 
             # Run analysis
-            await _run_analysis_cycle(h1_candles)
+            await _run_analysis_cycle(m15_candles)
 
         except asyncio.CancelledError:
             break
@@ -402,7 +402,7 @@ async def _analysis_loop():
     logger.info("Analysis loop stopped.")
 
 
-async def _run_analysis_cycle(h1_candles):
+async def _run_analysis_cycle(m15_candles):
     """Execute one full analysis cycle."""
     bot_config.bot_status = "analyzing"
     await ws_manager.broadcast_status({"bot_status": "analyzing"})
@@ -420,11 +420,11 @@ async def _run_analysis_cycle(h1_candles):
         return
 
     # Calculate indicators
-    h1_ind = calculate_indicators(h1_candles, "H1")
+    m15_ind = calculate_indicators(m15_candles, "M15")
     h4_ind = calculate_indicators(h4_candles, "H4")
 
     # Determine trend, mode, and session
-    current_price_val = price.get("bid") or price.get("ask") or h1_ind.get("current_close")
+    current_price_val = price.get("bid") or price.get("ask") or m15_ind.get("current_close")
     trend = identify_trend(h4_ind, current_price=current_price_val)
     market_mode = get_market_mode(trend)
     session = get_current_session(utc_now)
@@ -462,7 +462,7 @@ async def _run_analysis_cycle(h1_candles):
         return
 
     # ── TEST MODE ────────────────────────────────────────────────────────────
-    # Fires an unconditional BUY on every H1 candle to verify the execution
+    # Fires an unconditional BUY on every M15 candle to verify the execution
     # pipeline end-to-end. All strategy/AI/session/cooldown filters are skipped.
     # Safety guardrails (drawdown, margin) still apply above.
     if TEST_MODE:
@@ -474,7 +474,7 @@ async def _run_analysis_cycle(h1_candles):
             await ws_manager.broadcast_status({"bot_status": "running"})
             return
         ask    = price.get("ask") or price.get("bid", 0)
-        atr    = h1_ind.get("atr_14") or 1.0
+        atr    = m15_ind.get("atr_14") or 1.0
         sl     = round(ask - 1.5 * atr, 5)
         tp     = round(ask + 2.5 * atr, 5)
         min_lot = (mt5_connector.symbol_info or {}).get("min_lot", 0.01)
@@ -515,7 +515,7 @@ async def _run_analysis_cycle(h1_candles):
 
     # Weekend check
     if positions:
-        atr = h1_ind.get("atr_14", 0)
+        atr = m15_ind.get("atr_14", 0)
         weekend_actions = check_weekend_close(positions, atr, utc_now)
         for wa in weekend_actions:
             if wa["action"] == "close":
@@ -533,15 +533,15 @@ async def _run_analysis_cycle(h1_candles):
     last_trades = await get_last_n_trades(5)
 
     # ── Per-candle diagnostic log ─────────────────────────────────────────────
-    rsi       = h1_ind.get("rsi_14")
-    close_p   = h1_ind.get("current_close")
-    ema50_h1  = h1_ind.get("ema_50")
+    rsi        = m15_ind.get("rsi_14")
+    close_p    = m15_ind.get("current_close")
+    ema50_m15  = m15_ind.get("ema_50")
     ema50_dist_pct = (
-        abs(close_p - ema50_h1) / ema50_h1 * 100
-        if close_p and ema50_h1 else None
+        abs(close_p - ema50_m15) / ema50_m15 * 100
+        if close_p and ema50_m15 else None
     )
-    buy_chk  = check_buy_signal(h1_ind, trend, session, news_clear, positions)
-    sell_chk = check_sell_signal(h1_ind, trend, session, news_clear, positions)
+    buy_chk  = check_buy_signal(m15_ind, trend, session, news_clear, positions)
+    sell_chk = check_sell_signal(m15_ind, trend, session, news_clear, positions)
 
     def _fmt_checks(chk: dict) -> str:
         return " | ".join(
@@ -571,9 +571,9 @@ async def _run_analysis_cycle(h1_candles):
         logger.info(f"No signal this candle. Buy: {buy_chk['reasons']} | Sell: {sell_chk['reasons']}")
         await log_analysis({
             "timestamp": utc_now.isoformat(), "xaueur_price": price.get("bid"),
-            "h1_ema50": ema50_h1, "h1_ema200": h1_ind.get("ema_200"),
+            "m15_ema50": ema50_m15, "m15_ema200": m15_ind.get("ema_200"),
             "h4_ema50": h4_ind.get("ema_50"), "h4_ema200": h4_ind.get("ema_200"),
-            "rsi_14": rsi, "atr_14": h1_ind.get("atr_14"),
+            "rsi_14": rsi, "atr_14": m15_ind.get("atr_14"),
             "trend": trend, "session": session,
             "ai_action": "hold", "ai_confidence": 0, "ai_reasoning": top_reason,
             "executed": 0, "skipped_reason": "no_strategy_signal",
@@ -582,12 +582,12 @@ async def _run_analysis_cycle(h1_candles):
         return
 
     # ── Call AI for confidence + SL/TP validation ────────────────────────────
-    h1_json = h1_candles.tail(10).to_dict("records") if h1_candles is not None else []
+    m15_json = m15_candles.tail(10).to_dict("records") if m15_candles is not None else []
     h4_json = h4_candles.tail(5).to_dict("records") if h4_candles is not None else []
 
     data_packet = ai_engine.build_data_packet(
-        price=price, h1_candles_json=h1_json, h4_candles_json=h4_json,
-        h1_indicators=h1_ind, h4_indicators=h4_ind, trend=trend,
+        price=price, m15_candles_json=m15_json, h4_candles_json=h4_json,
+        m15_indicators=m15_ind, h4_indicators=h4_ind, trend=trend,
         account=account, positions=positions,
         upcoming_events=upcoming_events, session=session,
         last_trades=last_trades, risk_pct=bot_config.validate_risk(),
@@ -612,12 +612,12 @@ async def _run_analysis_cycle(h1_candles):
     analysis_data = {
         "timestamp": utc_now.isoformat(),
         "xaueur_price": price["bid"],
-        "h1_ema50": ema50_h1,
-        "h1_ema200": h1_ind.get("ema_200"),
+        "m15_ema50": ema50_m15,
+        "m15_ema200": m15_ind.get("ema_200"),
         "h4_ema50": h4_ind.get("ema_50"),
         "h4_ema200": h4_ind.get("ema_200"),
         "rsi_14": rsi,
-        "atr_14": h1_ind.get("atr_14"),
+        "atr_14": m15_ind.get("atr_14"),
         "trend": trend,
         "session": session,
         "ai_action": ai_result["action"],
@@ -647,8 +647,8 @@ async def _run_analysis_cycle(h1_candles):
 
         # Calculate SL/TP
         entry_price = ai_result.get("entry_price") or price["ask" if action == "buy" else "bid"]
-        atr = h1_ind.get("atr_14", 1)
-        ema50 = h1_ind.get("ema_50", entry_price)
+        atr = m15_ind.get("atr_14", 1)
+        ema50 = m15_ind.get("ema_50", entry_price)
         sl_tp = calculate_sl_tp(action, entry_price, atr, ema50)
 
         # Use AI-suggested levels if provided and reasonable
