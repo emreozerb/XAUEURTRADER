@@ -56,5 +56,9 @@ class WebSocketManager:
     async def broadcast_alert(self, message: str, level: str = "info"):
         await self.broadcast({"type": "alert", "data": {"message": message, "level": level}})
 
+    async def broadcast_force_logout(self, reason: str):
+        """Tell the frontend to log out immediately (e.g. MT5 unrecoverable disconnect)."""
+        await self.broadcast({"type": "force_logout", "data": {"reason": reason}})
+
 
 ws_manager = WebSocketManager()

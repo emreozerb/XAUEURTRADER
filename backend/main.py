@@ -50,6 +50,24 @@ async def log_and_alert(message: str, level: str = "info", source: str = "system
     log_fn(f"[{source}] {message}")
 
 
+async def soft_pause(hours: float, reason: str, source: str = "system") -> None:
+    """
+    Soft pause: keep bot_running=True so the loop stays alive,
+    but set bot_status='paused' + pause_until timestamp.
+    The analysis loop will skip candles until the timer expires then auto-resume.
+    """
+    pause_until = datetime.now(timezone.utc) + timedelta(hours=hours)
+    bot_config.bot_status = "paused"
+    bot_config.pause_until = pause_until.isoformat()
+    resume_str = pause_until.strftime("%H:%M UTC")
+    msg = f"{reason} — bot paused for {hours:.0f}h, resumes at {resume_str}."
+    await log_and_alert(msg, "warning", source)
+    await ws_manager.broadcast_status({
+        "bot_status": "paused",
+        "pause_until": bot_config.pause_until,
+    })
+
+
 # Background tasks
 _bot_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
@@ -93,15 +111,8 @@ class MT5Credentials(BaseModel):
 
 class BotSettings(BaseModel):
     risk_per_trade_pct: float = 2.0
-    lot_size_mode: str = "approval"
-    max_concurrent_positions: int = 1
     anthropic_api_key: str = ""
     finnhub_api_key: str = ""
-
-
-class ApprovalAction(BaseModel):
-    approved: bool
-    manual_lot: float | None = None
 
 
 class BacktestConfig(BaseModel):
@@ -122,14 +133,12 @@ async def get_status():
         "bot_status": bot_config.bot_status,
         "bot_running": bot_config.bot_running,
         "error_message": bot_config.error_message,
+        "pause_until": bot_config.pause_until,
         "account": account,
         "positions": positions,
         "current_price": price,
         "symbol": bot_config.symbol,
         "risk_per_trade_pct": bot_config.risk_per_trade_pct,
-        "lot_size_mode": bot_config.lot_size_mode,
-        "max_concurrent_positions": bot_config.max_concurrent_positions,
-        "pending_signal": trade_manager.pending_signal,
     }
 
 
@@ -156,8 +165,6 @@ async def disconnect_mt5():
 @app.post("/api/settings")
 async def update_settings(s: BotSettings):
     bot_config.risk_per_trade_pct = min(max(s.risk_per_trade_pct, 1.0), 5.0)
-    bot_config.lot_size_mode = s.lot_size_mode
-    bot_config.max_concurrent_positions = min(max(s.max_concurrent_positions, 1), 3)
     if s.anthropic_api_key:
         settings.anthropic_api_key = s.anthropic_api_key
         ai_engine.initialize(s.anthropic_api_key)
@@ -201,67 +208,12 @@ async def stop_bot():
     global _bot_task, _monitor_task, _connection_task
     bot_config.bot_running = False
     bot_config.bot_status = "stopped"
-    trade_manager.clear_pending_signal()
-
     for task in [_bot_task, _monitor_task, _connection_task]:
         if task and not task.done():
             task.cancel()
 
     await log_and_alert("Bot stopped. Open positions remain with SL/TP.", "info", "bot")
     return {"success": True}
-
-
-@app.post("/api/approve")
-async def approve_trade(action: ApprovalAction):
-    bot_config.last_user_interaction = datetime.now(timezone.utc).isoformat()
-    signal = trade_manager.pending_signal
-    if signal is None:
-        raise HTTPException(400, "No pending signal.")
-
-    if not action.approved:
-        await log_analysis({
-            **signal.get("analysis_data", {}),
-            "executed": 0,
-            "skipped_reason": "user_rejected",
-        })
-        trade_manager.clear_pending_signal()
-        await log_and_alert("Signal rejected.", "info", "approval")
-        return {"success": True, "action": "rejected"}
-
-    # Use manual lot if provided and valid
-    lot = signal["lot_size"]
-    if action.manual_lot is not None and bot_config.lot_size_mode == "manual":
-        lot = action.manual_lot
-        # Validate manual lot
-        account = mt5_connector.get_account_info()
-        if account:
-            validation = risk_manager.validate_trade(
-                lot, account["balance"], account["free_margin"],
-                account["equity"], mt5_connector.get_positions(),
-                bot_config.validate_risk(), bot_config.max_concurrent_positions,
-                mt5_connector.symbol_info or {},
-            )
-            if not validation["valid"]:
-                raise HTTPException(400, "; ".join(validation["errors"]))
-
-    result = await trade_manager.execute_trade(
-        direction=signal["direction"],
-        lot_size=lot,
-        sl=signal["stop_loss"],
-        tp=signal["take_profit"],
-        ai_confidence=signal["confidence"],
-        ai_reasoning=signal["reasoning"],
-    )
-
-    if result["success"]:
-        await log_and_alert(
-            f"Trade executed: {signal['direction'].upper()} {lot} lots @ {result['price']}",
-            "success", "trade"
-        )
-    else:
-        await log_and_alert(f"Trade failed: {result['error']}", "error", "trade")
-
-    return result
 
 
 @app.post("/api/emergency-close")
@@ -316,7 +268,7 @@ async def run_backtest_endpoint(config: BacktestConfig):
         h4_candles=h4_candles,
         starting_balance=config.starting_balance,
         risk_pct=bot_config.validate_risk(),
-        max_positions=bot_config.max_concurrent_positions,
+        max_positions=1,
         pip_value=symbol_info.get("pip_value", 1.0),
         tick_size=symbol_info.get("tick_size", 0.01),
     )
@@ -401,19 +353,22 @@ async def _analysis_loop():
             if not bot_config.bot_running or not mt5_connector.connected:
                 continue
 
-            # Check for error state — stay stopped until user restarts
+            # Hard error — stay stopped until user manually restarts
             if bot_config.bot_status == "error":
                 continue
 
-            # Check signal expiry
-            if trade_manager.pending_signal and trade_manager.is_signal_expired():
-                await log_analysis({
-                    **trade_manager.pending_signal.get("analysis_data", {}),
-                    "executed": 0,
-                    "skipped_reason": "expired_15min",
-                })
-                trade_manager.clear_pending_signal()
-                await log_and_alert("Signal expired (15 min).", "warning", "signal")
+            # Soft pause — skip candles until timer expires, then auto-resume
+            if bot_config.bot_status == "paused":
+                if bot_config.pause_until:
+                    pause_end = datetime.fromisoformat(bot_config.pause_until)
+                    if datetime.now(timezone.utc) < pause_end:
+                        continue
+                    bot_config.bot_status = "running"
+                    bot_config.pause_until = None
+                    await log_and_alert("Bot resumed after pause.", "info", "bot")
+                    await ws_manager.broadcast_status({"bot_status": "running", "pause_until": None})
+                else:
+                    continue
 
             # Get H1 candles and check for new candle
             h1_candles = mt5_connector.get_candles("H1", 100)
@@ -478,11 +433,19 @@ async def _run_analysis_cycle(h1_candles):
         await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
         return
 
-    # Consecutive losses warning — log and continue, don't stop
-    if bot_config.consecutive_losses >= 3:
-        await log_and_alert(
-            f"{bot_config.consecutive_losses} consecutive losses. Trading with extra caution.", "warning", "risk"
-        )
+    # Consecutive losses — soft pause for 4 hours
+    if bot_config.consecutive_losses >= 3 and bot_config.bot_status != "paused":
+        await soft_pause(4, f"{bot_config.consecutive_losses} consecutive losses", "risk")
+        return
+
+    # Inactivity — soft pause for 1 hour if no user interaction in 24h
+    if bot_config.last_user_interaction:
+        last_interact = datetime.fromisoformat(bot_config.last_user_interaction)
+        if last_interact.tzinfo is None:
+            last_interact = last_interact.replace(tzinfo=timezone.utc)
+        if (utc_now - last_interact) > timedelta(hours=24) and bot_config.bot_status != "paused":
+            await soft_pause(1, "No user interaction for 24h", "bot")
+            return
 
     # Margin safety
     if not risk_manager.check_margin_safety(account["free_margin"], account["equity"]):
@@ -516,7 +479,7 @@ async def _run_analysis_cycle(h1_candles):
             "ai_reasoning": "TEST MODE — unconditional BUY to verify execution pipeline",
         }
 
-        if bot_config.lot_size_mode == "auto":
+        if True:  # always auto-execute
             result = await trade_manager.execute_trade("buy", min_lot, sl, tp, 99, "TEST MODE")
             await log_analysis({**test_analysis,
                                  "executed": 1 if result["success"] else 0,
@@ -526,18 +489,15 @@ async def _run_analysis_cycle(h1_candles):
             else:
                 await log_and_alert(f"TEST: Trade failed: {result['error']}", "error", "bot")
         else:
-            signal = {
-                "direction": "buy", "confidence": 99,
-                "entry_price": ask, "stop_loss": sl, "take_profit": tp,
-                "lot_size": min_lot, "risk_eur": 0, "risk_pct": 0, "sl_pips": 0,
-                "risk_reward": round((tp - ask) / (ask - sl), 2) if ask != sl else 0,
-                "reasoning": "TEST MODE — unconditional BUY to verify execution pipeline",
-                "analysis_data": test_analysis,
-            }
-            await log_analysis({**test_analysis, "executed": 0, "skipped_reason": "test_mode_pending_approval"})
-            trade_manager.set_pending_signal(signal)
-            await ws_manager.broadcast_signal(signal)
-            await log_and_alert("TEST MODE: BUY signal — awaiting approval.", "warning", "bot")
+            # Approval flow removed — always execute directly
+            result = await trade_manager.execute_trade("buy", min_lot, sl, tp, 99, "TEST MODE")
+            await log_analysis({**test_analysis,
+                                 "executed": 1 if result["success"] else 0,
+                                 "skipped_reason": None if result["success"] else result.get("error")})
+            if result["success"]:
+                await log_and_alert(f"TEST: BUY {min_lot} lots @ {result['price']}", "success", "bot")
+            else:
+                await log_and_alert(f"TEST: Trade failed: {result['error']}", "error", "bot")
 
         if bot_config.bot_status == "analyzing":
             bot_config.bot_status = "running"
@@ -634,11 +594,8 @@ async def _run_analysis_cycle(h1_candles):
         reason = ai_engine.last_error_reason or "Unknown AI error."
         await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
         if ai_engine.consecutive_failures >= 3:
-            bot_config.bot_running = False
-            bot_config.bot_status = "error"
-            bot_config.error_message = f"AI stopped after 3 failures — {reason}"
-            await log_and_alert(bot_config.error_message, "error", "ai")
-            await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
+            ai_engine.consecutive_failures = 0  # reset so it retries after resume
+            await soft_pause(0.25, f"AI unavailable — {reason}", "ai")  # 15-minute soft pause
         else:
             bot_config.bot_status = "running"
         return
@@ -711,45 +668,23 @@ async def _run_analysis_cycle(h1_candles):
             bot_config.bot_status = "running"
             return
 
-        lot_size = ai_result.get("recommended_lot") or lot_calc["lot_size"]
-        # Ensure lot doesn't exceed calculated safe lot
-        lot_size = min(lot_size, lot_calc["lot_size"])
+        lot_size = min(
+            ai_result.get("recommended_lot") or lot_calc["lot_size"],
+            lot_calc["lot_size"],
+        )
 
-        signal = {
-            "direction": action,
-            "confidence": confidence,
-            "entry_price": entry_price,
-            "stop_loss": sl,
-            "take_profit": tp,
-            "lot_size": lot_size,
-            "risk_eur": lot_calc["risk_eur"],
-            "risk_pct": lot_calc["risk_pct"],
-            "sl_pips": lot_calc["sl_pips"],
-            "risk_reward": sl_tp["risk_reward"],
-            "reasoning": ai_result["reasoning"],
-            "analysis_data": analysis_data,
-        }
-
-        if bot_config.lot_size_mode == "auto":
-            # Execute immediately
-            result = await trade_manager.execute_trade(
-                action, lot_size, sl, tp, confidence, ai_result["reasoning"]
-            )
-            await log_analysis({**analysis_data, "executed": 1 if result["success"] else 0,
-                               "skipped_reason": result.get("error")})
-            if result["success"]:
-                await log_and_alert(
-                    f"AUTO: {action.upper()} {lot_size} lots @ {result['price']}", "success", "trade"
-                )
-            else:
-                await log_and_alert(f"Trade failed: {result['error']}", "error", "trade")
-        else:
-            # Approval or Manual mode — show to user
-            trade_manager.set_pending_signal(signal)
-            await ws_manager.broadcast_signal(signal)
+        # Always auto-execute — approval flow removed
+        result = await trade_manager.execute_trade(
+            action, lot_size, sl, tp, confidence, ai_result["reasoning"]
+        )
+        await log_analysis({**analysis_data, "executed": 1 if result["success"] else 0,
+                           "skipped_reason": result.get("error")})
+        if result["success"]:
             await log_and_alert(
-                f"Signal: {action.upper()} — {confidence}% confidence. Awaiting approval.", "info", "signal"
+                f"{action.upper()} {lot_size} lots @ {result['price']}", "success", "trade"
             )
+        else:
+            await log_and_alert(f"Trade failed: {result['error']}", "error", "trade")
 
     elif action == "update_sl" and ai_result.get("new_sl"):
         # Update trailing stop
@@ -835,11 +770,11 @@ async def _connection_check_loop():
                         retry_count = 0
                         await log_and_alert("MT5 reconnected.", "success", "mt5")
                 else:
+                    reason = "MT5 connection lost after 5 retries — check MetaTrader and log back in."
                     bot_config.bot_running = False
-                    bot_config.bot_status = "error"
-                    bot_config.error_message = "MT5 connection lost after 5 retries — bot stopped. Check MetaTrader."
-                    await log_and_alert(bot_config.error_message, "error", "mt5")
-                    await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
+                    bot_config.bot_status = "stopped"
+                    await log_and_alert(reason, "error", "mt5")
+                    await ws_manager.broadcast_force_logout(reason)
                     break
             else:
                 retry_count = 0

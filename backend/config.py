@@ -23,12 +23,13 @@ class BotConfig(BaseModel):
     mt5_server: str = ""
     symbol: str = "XAUEUR"
     risk_per_trade_pct: float = 2.0
-    lot_size_mode: str = "approval"  # auto, approval, manual
-    max_concurrent_positions: int = 1
+    # lot_size_mode is always "auto" — approval flow removed
+    # max_concurrent_positions is always 1
     # Internal state
     bot_running: bool = False
-    bot_status: str = "stopped"  # stopped, running, analyzing, awaiting_approval, error
+    bot_status: str = "stopped"  # stopped, running, analyzing, paused, error
     error_message: str | None = None
+    pause_until: str | None = None   # ISO timestamp; None = permanent pause
     start_balance: float = 0.0
     consecutive_losses: int = 0
     last_sl_hit_time: str | None = None

@@ -3,7 +3,6 @@ import LoginScreen from './components/LoginScreen';
 import TopBar from './components/TopBar';
 import Settings from './components/Settings';
 import LiveStatus from './components/LiveStatus';
-import ApprovalCard from './components/ApprovalCard';
 import TradeCard from './components/TradeCard';
 import TradeLog from './components/TradeLog';
 import Performance from './components/Performance';
@@ -23,7 +22,6 @@ export default function App() {
   const [account, setAccount] = useState(null);
   const [positions, setPositions] = useState([]);
   const [currentPrice, setCurrentPrice] = useState(null);
-  const [pendingSignal, setPendingSignal] = useState(null);
   const [trades, setTrades] = useState([]);
   const [performance, setPerformance] = useState(null);
   const [alerts, setAlerts] = useState([]);
@@ -83,7 +81,6 @@ export default function App() {
     setBotStatus('stopped');
     setAccount(null);
     setPositions([]);
-    setPendingSignal(null);
     localStorage.removeItem('xaueur_logged_in');
   };
 
@@ -103,13 +100,13 @@ export default function App() {
           if (msg.data.session) setSession(msg.data.session);
           if (msg.data.session_display) setSessionDisplay(msg.data.session_display);
           if (msg.data.last_analysis) setLastAnalysis(msg.data.last_analysis);
-        } else if (msg.type === 'signal') {
-          setPendingSignal(msg.data);
         } else if (msg.type === 'trade_update') {
           if (msg.data.positions) setPositions(msg.data.positions);
           if (msg.data.account) setAccount(msg.data.account);
         } else if (msg.type === 'alert') {
           addAlert(msg.data.message, msg.data.level);
+        } else if (msg.type === 'force_logout') {
+          handleLogout();
         }
       };
       ws.onclose = () => { setTimeout(connect, 3000); };
@@ -132,7 +129,6 @@ export default function App() {
         if (data.account) setAccount(data.account);
         if (data.positions) setPositions(data.positions);
         if (data.current_price) setCurrentPrice(data.current_price);
-        if (data.pending_signal) setPendingSignal(data.pending_signal);
       } catch { /* backend not ready */ }
     };
     poll();
@@ -195,20 +191,6 @@ export default function App() {
       await fetch(`${API}/api/bot/stop`, { method: 'POST' });
       setBotStatus('stopped');
     } catch { addAlert('Failed to stop bot', 'error'); }
-  };
-
-  const handleApprove = async (approved, manualLot) => {
-    try {
-      const res = await fetch(`${API}/api/approve`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved, manual_lot: manualLot }),
-      });
-      const data = await res.json();
-      setPendingSignal(null);
-      if (!approved) addAlert('Signal rejected', 'info');
-      else if (data.success) addAlert('Trade executed', 'success');
-      else addAlert(data.error || data.detail || 'Trade failed', 'error');
-    } catch { addAlert('Approval failed', 'error'); }
   };
 
   const handleEmergencyClose = async () => {
@@ -290,10 +272,6 @@ export default function App() {
               <LiveStatus trend={trend} marketMode={marketMode} session={session}
                 sessionDisplay={sessionDisplay} botStatus={botStatus}
                 lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
-
-              {pendingSignal && (
-                <ApprovalCard signal={pendingSignal} onApprove={handleApprove} />
-              )}
 
               {positions.map(pos => (
                 <TradeCard key={pos.ticket} position={pos} />
