@@ -72,6 +72,7 @@ async def soft_pause(hours: float, reason: str, source: str = "system") -> None:
 _bot_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
 _connection_task: asyncio.Task | None = None
+_connection_monitor_task: asyncio.Task | None = None  # runs always while connected
 
 
 @asynccontextmanager
@@ -144,6 +145,7 @@ async def get_status():
 
 @app.post("/api/connect")
 async def connect_mt5(creds: MT5Credentials):
+    global _connection_monitor_task
     result = mt5_connector.initialize(creds.account, creds.password, creds.server, creds.symbol)
     if result["success"]:
         bot_config.mt5_account = creds.account
@@ -151,11 +153,17 @@ async def connect_mt5(creds: MT5Credentials):
         bot_config.mt5_server = creds.server
         bot_config.symbol = creds.symbol
         await log_and_alert("MT5 connected successfully.", "success", "mt5")
+        # Start passive connection monitor — runs for the whole session, not just while bot is running
+        if _connection_monitor_task is None or _connection_monitor_task.done():
+            _connection_monitor_task = asyncio.create_task(_connection_monitor_loop())
     return result
 
 
 @app.post("/api/disconnect")
 async def disconnect_mt5():
+    global _connection_monitor_task
+    if _connection_monitor_task and not _connection_monitor_task.done():
+        _connection_monitor_task.cancel()
     mt5_connector.shutdown()
     bot_config.bot_running = False
     bot_config.bot_status = "stopped"
@@ -741,8 +749,56 @@ async def _position_monitor_loop():
     logger.info("Position monitor stopped.")
 
 
+async def _connection_monitor_loop():
+    """
+    Passive MT5 connection monitor — runs the entire session (not just while bot is running).
+    Checks every 30 seconds. On failure: attempts reconnect up to 3 times (10s apart).
+    If all retries fail → stops the bot and force-logs out the frontend.
+    """
+    retry_count = 0
+    logger.info("MT5 connection monitor started.")
+
+    while mt5_connector.connected:
+        try:
+            await asyncio.sleep(30)
+
+            if not mt5_connector.check_connection():
+                retry_count += 1
+                logger.warning(f"MT5 connection lost (monitor). Retry {retry_count}/3")
+                await log_and_alert(
+                    f"MT5 connection lost. Reconnecting ({retry_count}/3)...", "warning", "mt5"
+                )
+
+                if retry_count <= 3:
+                    success = mt5_connector.reconnect(
+                        bot_config.mt5_account, bot_config.mt5_password, bot_config.mt5_server
+                    )
+                    if success:
+                        retry_count = 0
+                        await log_and_alert("MT5 reconnected.", "success", "mt5")
+                else:
+                    # Give up — stop bot and log out frontend
+                    reason = "MT5 disconnected — could not reconnect after 3 attempts. Logging out."
+                    bot_config.bot_running = False
+                    bot_config.bot_status = "stopped"
+                    mt5_connector.connected = False
+                    await log_and_alert(reason, "error", "mt5")
+                    await ws_manager.broadcast_force_logout(reason)
+                    break
+            else:
+                retry_count = 0
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Connection monitor error: {e}")
+            await asyncio.sleep(30)
+
+    logger.info("MT5 connection monitor stopped.")
+
+
 async def _connection_check_loop():
-    """Check MT5 connection every 10 seconds."""
+    """Check MT5 connection every 10 seconds (runs while bot is running)."""
     retry_count = 0
     logger.info("Connection checker started.")
 
