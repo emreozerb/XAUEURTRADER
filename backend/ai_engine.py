@@ -77,11 +77,13 @@ class AIEngine:
         self.consecutive_failures = 0
         self.last_analysis_candle = None
         self.last_error_reason: str | None = None  # human-readable cause of last failure
+        self.last_error_is_fatal: bool = False      # True = will never self-heal (bad key, no credits)
 
     def initialize(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.consecutive_failures = 0
         self.last_error_reason = None
+        self.last_error_is_fatal = False
 
     def _classify_api_error(self, exc: anthropic.APIError) -> str:
         """Return a clear human-readable reason for an Anthropic API error."""
@@ -153,12 +155,14 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             result["confidence"] = int(result["confidence"])
             self.consecutive_failures = 0
             self.last_error_reason = None
+            self.last_error_is_fatal = False
             return result
 
         except json.JSONDecodeError as e:
             reason = f"AI returned invalid JSON — could not parse response: {e}"
             logger.error(reason)
             self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 
@@ -166,12 +170,15 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = "Invalid Anthropic API key — check Settings."
             logger.error(f"{reason} | {e}")
             self.last_error_reason = reason
+            self.last_error_is_fatal = True   # key won't fix itself
             self.consecutive_failures += 1
             return None
 
         except anthropic.PermissionDeniedError as e:
             reason = self._classify_api_error(e)
             logger.error(f"{reason} | {e}")
+            # Credits exhausted is fatal; other 403s may be transient
+            self.last_error_is_fatal = "credit" in reason.lower() or "billing" in reason.lower()
             self.last_error_reason = reason
             self.consecutive_failures += 1
             return None
@@ -180,12 +187,15 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = self._classify_api_error(e)
             logger.warning(f"{reason} | {e}")
             self.last_error_reason = reason
+            self.last_error_is_fatal = False  # rate limit is transient
             self.consecutive_failures += 1
             return None
 
         except anthropic.APIStatusError as e:
             reason = self._classify_api_error(e)
             logger.error(f"{reason} | status={e.status_code} | {e}")
+            # 401 via generic status path is also fatal
+            self.last_error_is_fatal = e.status_code == 401 or e.status_code == 402
             self.last_error_reason = reason
             self.consecutive_failures += 1
             return None
@@ -194,6 +204,7 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = "Cannot reach Anthropic API — check internet connection."
             logger.error(f"{reason} | {e}")
             self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 
@@ -201,6 +212,7 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = "Anthropic API request timed out — will retry next candle."
             logger.warning(f"{reason} | {e}")
             self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 
@@ -208,6 +220,7 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = self._classify_api_error(e)
             logger.error(f"{reason} | {e}")
             self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 
@@ -215,6 +228,7 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             reason = f"Unexpected AI error: {type(e).__name__}: {e}"
             logger.error(reason, exc_info=True)
             self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 

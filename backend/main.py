@@ -596,11 +596,18 @@ async def _run_analysis_cycle(m15_candles):
 
     if ai_result is None:
         reason = ai_engine.last_error_reason or "Unknown AI error."
-        await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
-        if ai_engine.consecutive_failures >= 3:
+        if ai_engine.last_error_is_fatal:
+            # Fatal errors (bad key, no credits) will never self-heal — hard stop immediately
+            bot_config.bot_running = False
+            bot_config.bot_status = "error"
+            bot_config.error_message = reason
+            await log_and_alert(f"Bot stopped: {reason}", "error", "ai")
+            await ws_manager.broadcast_status({"bot_status": "error", "error_message": reason})
+        elif ai_engine.consecutive_failures >= 3:
             ai_engine.consecutive_failures = 0  # reset so it retries after resume
             await soft_pause(0.25, f"AI unavailable — {reason}", "ai")  # 15-minute soft pause
         else:
+            await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
             bot_config.bot_status = "running"
         return
 
