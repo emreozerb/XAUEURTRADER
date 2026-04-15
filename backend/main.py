@@ -73,6 +73,7 @@ _bot_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
 _connection_task: asyncio.Task | None = None
 _connection_monitor_task: asyncio.Task | None = None  # runs always while connected
+_analysis_running: bool = False  # guard against concurrent analysis cycles
 
 
 @asynccontextmanager
@@ -173,7 +174,7 @@ async def disconnect_mt5():
 
 @app.post("/api/settings")
 async def update_settings(s: BotSettings):
-    bot_config.risk_per_trade_pct = min(max(s.risk_per_trade_pct, 1.0), 5.0)
+    bot_config.risk_per_trade_pct = min(max(s.risk_per_trade_pct, 1.0), 10.0)
     if s.anthropic_api_key:
         settings.anthropic_api_key = s.anthropic_api_key
         ai_engine.initialize(s.anthropic_api_key)
@@ -190,12 +191,21 @@ async def start_bot():
         raise HTTPException(400, "MT5 not connected.")
     if not settings.anthropic_api_key:
         raise HTTPException(400, "Anthropic API key not set.")
-    if not ai_engine.is_available():
-        ai_engine.initialize(settings.anthropic_api_key)
+    # Always (re-)initialize so the latest key from settings/.env is used
+    ai_engine.initialize(settings.anthropic_api_key)
 
     account = mt5_connector.get_account_info()
     if account:
         bot_config.start_balance = account["balance"]
+
+    # Cancel any existing tasks before starting new ones — prevents duplicate loops
+    for task in [_bot_task, _monitor_task, _connection_task]:
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
 
     bot_config.bot_running = True
     bot_config.bot_status = "running"
@@ -404,7 +414,20 @@ async def _analysis_loop():
 
 
 async def _run_analysis_cycle(m15_candles):
-    """Execute one full analysis cycle."""
+    """Execute one full analysis cycle. Re-entrancy guard prevents concurrent runs."""
+    global _analysis_running
+    if _analysis_running:
+        logger.warning("Analysis cycle already running — skipping this candle (re-entrancy guard).")
+        return
+    _analysis_running = True
+    try:
+        await _run_analysis_cycle_inner(m15_candles)
+    finally:
+        _analysis_running = False
+
+
+async def _run_analysis_cycle_inner(m15_candles):
+    """Inner analysis logic — called exclusively from _run_analysis_cycle."""
     bot_config.bot_status = "analyzing"
     await ws_manager.broadcast_status({"bot_status": "analyzing"})
 
