@@ -28,7 +28,7 @@ from .trade_manager import trade_manager
 from .calendar import economic_calendar
 from .websocket_manager import ws_manager
 from .backtester import run_backtest
-from .logger import setup_logging
+from .logger import setup_logging, attach_ws_handler
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ _connection_monitor_task: asyncio.Task | None = None  # runs always while connec
 async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized.")
+    attach_ws_handler(ws_manager)
     yield
     # Shutdown
     if _bot_task and not _bot_task.done():
@@ -545,8 +546,8 @@ async def _run_analysis_cycle(m15_candles):
 
     logger.info(
         f"CANDLE | trend={trend} mode={market_mode} session={session} | "
-        f"RSI={rsi:.1f if rsi else 'n/a'} | "
-        f"EMA50 dist={ema50_dist_pct:.2f}% | "
+        f"RSI={f'{rsi:.1f}' if rsi is not None else 'n/a'} | "
+        f"EMA50 dist={f'{ema50_dist_pct:.2f}%' if ema50_dist_pct is not None else 'n/a'} | "
         f"BUY=[{_fmt_checks(buy_chk)}] | "
         f"SELL=[{_fmt_checks(sell_chk)}]"
     )

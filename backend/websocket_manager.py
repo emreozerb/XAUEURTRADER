@@ -60,5 +60,17 @@ class WebSocketManager:
         """Tell the frontend to log out immediately (e.g. MT5 unrecoverable disconnect)."""
         await self.broadcast({"type": "force_logout", "data": {"reason": reason}})
 
+    async def broadcast_log(self, level: str, source: str, message: str, timestamp: str):
+        """Stream a backend log entry to all connected frontend clients."""
+        await self.broadcast({
+            "type": "log",
+            "data": {
+                "level": level,
+                "source": source,
+                "message": message,
+                "timestamp": timestamp,
+            },
+        })
+
 
 ws_manager = WebSocketManager()

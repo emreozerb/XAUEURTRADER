@@ -10,6 +10,7 @@ import Backtest from './components/Backtest';
 import EmergencyButton from './components/EmergencyButton';
 import ChartView from './components/ChartView';
 import EventLog from './components/EventLog';
+import LogsTab from './components/LogsTab';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -37,6 +38,8 @@ export default function App() {
   const [liveWarning, setLiveWarning] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [events, setEvents] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [unreadErrors, setUnreadErrors] = useState(0);
   const wsRef = useRef(null);
   const alertIdRef = useRef(0);
 
@@ -105,6 +108,14 @@ export default function App() {
           if (msg.data.account) setAccount(msg.data.account);
         } else if (msg.type === 'alert') {
           addAlert(msg.data.message, msg.data.level);
+        } else if (msg.type === 'log') {
+          setLogs(prev => {
+            const next = [...prev, msg.data].slice(-200);
+            return next;
+          });
+          if (msg.data.level === 'error') {
+            setUnreadErrors(n => n + 1);
+          }
         } else if (msg.type === 'force_logout') {
           handleLogout();
         }
@@ -229,16 +240,12 @@ export default function App() {
               onClick={() => setActiveTab('chart')}>Chart</button>
             <button
               className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
-              onClick={() => setActiveTab('logs')}
+              onClick={() => { setActiveTab('logs'); setUnreadErrors(0); }}
               style={{ position: 'relative' }}
             >
               Logs
-              {events.some(e => e.level === 'error') && activeTab !== 'logs' && (
-                <span style={{
-                  position: 'absolute', top: 6, right: 4,
-                  width: 7, height: 7, borderRadius: '50%',
-                  background: 'var(--accent-red)', display: 'inline-block',
-                }} />
+              {unreadErrors > 0 && activeTab !== 'logs' && (
+                <span className="tab-error-badge">{unreadErrors > 99 ? '99+' : unreadErrors}</span>
               )}
             </button>
           </div>
@@ -286,9 +293,7 @@ export default function App() {
           )}
 
           {activeTab === 'logs' && (
-            <div style={{ padding: 16 }}>
-              <EventLog events={events} />
-            </div>
+            <LogsTab logs={logs} />
           )}
         </div>
       </div>
