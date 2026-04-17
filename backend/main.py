@@ -114,7 +114,6 @@ class MT5Credentials(BaseModel):
 
 class BotSettings(BaseModel):
     risk_per_trade_pct: float = 2.0
-    anthropic_api_key: str = ""
     finnhub_api_key: str = ""
 
 
@@ -175,9 +174,6 @@ async def disconnect_mt5():
 @app.post("/api/settings")
 async def update_settings(s: BotSettings):
     bot_config.risk_per_trade_pct = min(max(s.risk_per_trade_pct, 1.0), 10.0)
-    if s.anthropic_api_key:
-        settings.anthropic_api_key = s.anthropic_api_key
-        ai_engine.initialize(s.anthropic_api_key)
     if s.finnhub_api_key:
         settings.finnhub_api_key = s.finnhub_api_key
     return {"success": True}
@@ -190,8 +186,8 @@ async def start_bot():
     if not mt5_connector.connected:
         raise HTTPException(400, "MT5 not connected.")
     if not settings.anthropic_api_key:
-        raise HTTPException(400, "Anthropic API key not set.")
-    # Always (re-)initialize so the latest key from settings/.env is used
+        raise HTTPException(400, "ANTHROPIC_API_KEY not set in .env file.")
+    # Always (re-)initialize from .env — key is never taken from the UI
     ai_engine.initialize(settings.anthropic_api_key)
 
     account = mt5_connector.get_account_info()
