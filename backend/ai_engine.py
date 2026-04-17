@@ -80,6 +80,16 @@ class AIEngine:
         self.last_error_is_fatal: bool = False      # True = will never self-heal (bad key, no credits)
 
     def initialize(self, api_key: str):
+        import os
+        import inspect
+        caller_file = inspect.stack()[1].filename
+        masked = f"{api_key[:18]}...{api_key[-6:]}" if len(api_key) > 24 else f"({len(api_key)} chars — too short)"
+        env_key = (os.environ.get("ANTHROPIC_API_KEY") or "")
+        env_masked = f"{env_key[:18]}...{env_key[-6:]}" if len(env_key) > 24 else f"not set or too short"
+        logger.info(
+            f"AI engine initialising | caller={caller_file} | "
+            f"key-in-use={masked} | env-key={env_masked} | match={'YES' if api_key == env_key else 'NO'}"
+        )
         self.client = anthropic.Anthropic(api_key=api_key)
         self.consecutive_failures = 0
         self.last_error_reason = None
@@ -167,8 +177,15 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
             return None
 
         except anthropic.AuthenticationError as e:
+            import os
+            key_in_client = (self.client.api_key if hasattr(self.client, "api_key") else "unknown")
+            env_key = (os.environ.get("ANTHROPIC_API_KEY") or "")
+            masked_client = f"{key_in_client[:18]}...{key_in_client[-6:]}" if len(key_in_client) > 24 else f"({len(key_in_client)} chars)"
+            masked_env = f"{env_key[:18]}...{env_key[-6:]}" if len(env_key) > 24 else "not set"
             reason = "Invalid Anthropic API key — check Settings."
-            logger.error(f"{reason} | {e}")
+            logger.error(
+                f"{reason} | key-sent-to-api={masked_client} | env-ANTHROPIC_API_KEY={masked_env} | {e}"
+            )
             self.last_error_reason = reason
             self.last_error_is_fatal = True   # key won't fix itself
             self.consecutive_failures += 1
