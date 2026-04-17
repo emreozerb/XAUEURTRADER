@@ -50,6 +50,18 @@ async def log_and_alert(message: str, level: str = "info", source: str = "system
     log_fn(f"[{source}] {message}")
 
 
+async def hard_stop(reason: str, source: str = "system") -> None:
+    """
+    Hard stop: bot_running=False, bot_status='error'.
+    Use for unrecoverable errors that require user intervention.
+    """
+    bot_config.bot_running = False
+    bot_config.bot_status = "error"
+    bot_config.error_message = reason
+    await log_and_alert(f"BOT STOPPED — {reason}", "error", source)
+    await ws_manager.broadcast_status({"bot_status": "error", "error_message": reason})
+
+
 async def soft_pause(hours: float, reason: str, source: str = "system") -> None:
     """
     Soft pause: keep bot_running=True so the loop stays alive,
@@ -365,12 +377,16 @@ async def _analysis_loop():
         try:
             await asyncio.sleep(10)  # Check every 10 seconds
 
-            if not bot_config.bot_running or not mt5_connector.connected:
-                continue
+            if not bot_config.bot_running:
+                break
 
             # Hard error — stay stopped until user manually restarts
             if bot_config.bot_status == "error":
                 continue
+
+            if not mt5_connector.connected:
+                await hard_stop("MT5 disconnected — reconnect MetaTrader and restart the bot.", "mt5")
+                break
 
             # Soft pause — skip candles until timer expires, then auto-resume
             if bot_config.bot_status == "paused":
@@ -403,7 +419,8 @@ async def _analysis_loop():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Analysis loop error: {e}", exc_info=True)
+            logger.error(f"[ANALYSIS_LOOP] Unexpected error — {type(e).__name__}: {e}", exc_info=True)
+            await log_and_alert(f"Analysis loop crashed unexpectedly: {e} — retrying in 30s", "error", "bot")
             await asyncio.sleep(30)
 
     logger.info("Analysis loop stopped.")
@@ -435,7 +452,16 @@ async def _run_analysis_cycle_inner(m15_candles):
     account = mt5_connector.get_account_info()
     positions = mt5_connector.get_positions()
 
-    if any(x is None for x in [h4_candles, price, account]):
+    if h4_candles is None:
+        logger.warning("[MT5] Could not fetch H4 candles — MT5 may be temporarily unavailable.")
+        bot_config.bot_status = "running"
+        return
+    if price is None:
+        logger.warning("[MT5] Could not fetch current price tick — MT5 may be temporarily unavailable.")
+        bot_config.bot_status = "running"
+        return
+    if account is None:
+        logger.warning("[MT5] Could not fetch account info — MT5 may be temporarily unavailable.")
         bot_config.bot_status = "running"
         return
 
@@ -454,11 +480,12 @@ async def _run_analysis_cycle_inner(m15_candles):
     # Safety checks
     dd_check = risk_manager.check_drawdown_limit(account["equity"], bot_config.start_balance)
     if dd_check["exceeded"]:
-        bot_config.bot_running = False
-        bot_config.bot_status = "error"
-        bot_config.error_message = f"Max drawdown reached ({dd_check['drawdown_pct']:.1f}%). Bot stopped — restart manually."
-        await log_and_alert(bot_config.error_message, "error", "risk")
-        await ws_manager.broadcast_status({"bot_status": "error", "error_message": bot_config.error_message})
+        # ── FATAL RISK: MAX DRAWDOWN ──────────────────────────────────────────
+        await hard_stop(
+            f"Max drawdown exceeded: {dd_check['drawdown_pct']:.1f}% loss on session balance. "
+            f"Restart manually after reviewing open positions.",
+            "risk"
+        )
         return
 
     # Inactivity — soft pause for 1 hour if no user interaction in 24h
@@ -472,7 +499,10 @@ async def _run_analysis_cycle_inner(m15_candles):
 
     # Margin safety
     if not risk_manager.check_margin_safety(account["free_margin"], account["equity"]):
-        await log_and_alert("Low margin — no new trades.", "warning", "risk")
+        await log_and_alert(
+            f"Low margin — no new trades. Free margin: {account['free_margin']:.2f}, equity: {account['equity']:.2f}",
+            "warning", "risk"
+        )
         bot_config.bot_status = "running"
         return
 
@@ -616,17 +646,17 @@ async def _run_analysis_cycle_inner(m15_candles):
     if ai_result is None:
         reason = ai_engine.last_error_reason or "Unknown AI error."
         if ai_engine.last_error_is_fatal:
-            # Fatal errors (bad key, no credits) will never self-heal — hard stop immediately
-            bot_config.bot_running = False
-            bot_config.bot_status = "error"
-            bot_config.error_message = reason
-            await log_and_alert(f"Bot stopped: {reason}", "error", "ai")
-            await ws_manager.broadcast_status({"bot_status": "error", "error_message": reason})
+            # ── FATAL AI ERROR ────────────────────────────────────────────────
+            # Bad API key or no credits — will never self-heal. Hard stop immediately.
+            await hard_stop(reason, "ai")
         elif ai_engine.consecutive_failures >= 3:
-            ai_engine.consecutive_failures = 0  # reset so it retries after resume
-            await soft_pause(0.25, f"AI unavailable — {reason}", "ai")  # 15-minute soft pause
+            # ── TRANSIENT AI ERROR (3 strikes) ───────────────────────────────
+            # Timeout / rate limit / network — soft-pause 15 min then auto-retry.
+            ai_engine.consecutive_failures = 0
+            await soft_pause(0.25, f"AI temporarily unavailable: {reason}", "ai")
         else:
-            await log_and_alert(f"AI call failed (attempt {ai_engine.consecutive_failures}/3): {reason}", "warning", "ai")
+            # ── TRANSIENT AI ERROR (1-2 strikes) ─────────────────────────────
+            logger.warning(f"[AI] Call failed (attempt {ai_engine.consecutive_failures}/3): {reason}")
             bot_config.bot_status = "running"
         return
 
@@ -688,7 +718,9 @@ async def _run_analysis_cycle_inner(m15_candles):
 
         if not lot_calc["valid"]:
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": lot_calc["error"]})
-            await log_and_alert(lot_calc["error"], "warning", "risk")
+            await log_and_alert(
+                f"Lot size calculation failed — trade skipped: {lot_calc['error']}", "warning", "risk"
+            )
             bot_config.bot_status = "running"
             return
 
@@ -705,10 +737,14 @@ async def _run_analysis_cycle_inner(m15_candles):
                            "skipped_reason": result.get("error")})
         if result["success"]:
             await log_and_alert(
-                f"{action.upper()} {lot_size} lots @ {result['price']}", "success", "trade"
+                f"{action.upper()} {lot_size} lots @ {result['price']} | SL={sl} TP={tp} | confidence={confidence}%",
+                "success", "trade"
             )
         else:
-            await log_and_alert(f"Trade failed: {result['error']}", "error", "trade")
+            await log_and_alert(
+                f"Trade REJECTED by broker: {result['error']} | direction={action} lots={lot_size}",
+                "error", "trade"
+            )
 
     elif action == "update_sl" and ai_result.get("new_sl"):
         # Update trailing stop
@@ -765,7 +801,7 @@ async def _position_monitor_loop():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Position monitor error: {e}")
+            logger.error(f"[POSITION_MONITOR] Error — {type(e).__name__}: {e}")
             await asyncio.sleep(10)
 
     logger.info("Position monitor stopped.")
@@ -774,8 +810,8 @@ async def _position_monitor_loop():
 async def _connection_monitor_loop():
     """
     Passive MT5 connection monitor — runs the entire session (not just while bot is running).
-    Checks every 30 seconds. On failure: attempts reconnect up to 3 times (10s apart).
-    If all retries fail → stops the bot and force-logs out the frontend.
+    Checks every 30 s. On failure: attempts reconnect up to 3 times.
+    If all retries fail → hard-stops the bot and force-logs out the frontend.
     """
     retry_count = 0
     logger.info("MT5 connection monitor started.")
@@ -786,7 +822,7 @@ async def _connection_monitor_loop():
 
             if not mt5_connector.check_connection():
                 retry_count += 1
-                logger.warning(f"MT5 connection lost (monitor). Retry {retry_count}/3")
+                logger.warning(f"[MT5] Connection lost — attempt {retry_count}/3 to reconnect...")
                 await log_and_alert(
                     f"MT5 connection lost. Reconnecting ({retry_count}/3)...", "warning", "mt5"
                 )
@@ -797,14 +833,17 @@ async def _connection_monitor_loop():
                     )
                     if success:
                         retry_count = 0
-                        await log_and_alert("MT5 reconnected.", "success", "mt5")
+                        await log_and_alert("MT5 reconnected successfully.", "success", "mt5")
+                    else:
+                        logger.warning(f"[MT5] Reconnect attempt {retry_count}/3 failed.")
                 else:
-                    # Give up — stop bot and log out frontend
-                    reason = "MT5 disconnected — could not reconnect after 3 attempts. Logging out."
-                    bot_config.bot_running = False
-                    bot_config.bot_status = "stopped"
+                    # ── FATAL MT5 DISCONNECT ──────────────────────────────────
+                    reason = (
+                        "MT5 connection lost — reconnection failed after 3 attempts. "
+                        "Check MetaTrader 5 is running and your internet connection."
+                    )
                     mt5_connector.connected = False
-                    await log_and_alert(reason, "error", "mt5")
+                    await hard_stop(reason, "mt5")
                     await ws_manager.broadcast_force_logout(reason)
                     break
             else:
@@ -813,7 +852,7 @@ async def _connection_monitor_loop():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Connection monitor error: {e}")
+            logger.error(f"[MT5] Connection monitor error — {type(e).__name__}: {e}")
             await asyncio.sleep(30)
 
     logger.info("MT5 connection monitor stopped.")
@@ -829,23 +868,26 @@ async def _connection_check_loop():
             await asyncio.sleep(10)
             if not mt5_connector.check_connection():
                 retry_count += 1
-                logger.warning(f"MT5 connection lost. Retry {retry_count}/5")
+                logger.warning(f"[MT5] Connection lost (bot checker) — attempt {retry_count}/5...")
                 await log_and_alert(
                     f"MT5 connection lost. Retrying ({retry_count}/5)...", "warning", "mt5"
                 )
-
                 if retry_count <= 5:
                     success = mt5_connector.reconnect(
                         bot_config.mt5_account, bot_config.mt5_password, bot_config.mt5_server
                     )
                     if success:
                         retry_count = 0
-                        await log_and_alert("MT5 reconnected.", "success", "mt5")
+                        await log_and_alert("MT5 reconnected successfully.", "success", "mt5")
+                    else:
+                        logger.warning(f"[MT5] Reconnect attempt {retry_count}/5 failed.")
                 else:
-                    reason = "MT5 connection lost after 5 retries — check MetaTrader and log back in."
-                    bot_config.bot_running = False
-                    bot_config.bot_status = "stopped"
-                    await log_and_alert(reason, "error", "mt5")
+                    # ── FATAL MT5 DISCONNECT (while bot running) ──────────────
+                    reason = (
+                        "MT5 connection lost — reconnection failed after 5 attempts. "
+                        "Check MetaTrader 5 is running, then reconnect and restart the bot."
+                    )
+                    await hard_stop(reason, "mt5")
                     await ws_manager.broadcast_force_logout(reason)
                     break
             else:
@@ -853,7 +895,7 @@ async def _connection_check_loop():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Connection check error: {e}")
+            logger.error(f"[MT5] Connection checker error — {type(e).__name__}: {e}")
             await asyncio.sleep(10)
 
     logger.info("Connection checker stopped.")
