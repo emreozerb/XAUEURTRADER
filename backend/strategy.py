@@ -79,10 +79,8 @@ def get_market_mode(trend: str) -> str:
 
 
 def get_confidence_threshold(mode: str) -> int:
-    """Get minimum confidence threshold based on market mode."""
-    if mode == "trend":
-        return 70
-    return 60  # range mode
+    """Get minimum confidence threshold. Phase 3: flat 45% regardless of mode."""
+    return 45
 
 
 # =============================================================================
@@ -128,7 +126,7 @@ def get_session_display_name(session: str) -> str:
 # =============================================================================
 
 def check_ema20_proximity(current_close: float, ema20: float) -> bool:
-    """Check if price is within 0.15% of EMA20."""
+    """Check if price is within 0.15% of EMA20. (Legacy — kept for rollback reference.)"""
     if ema20 == 0:
         return False
     distance_pct = abs(current_close - ema20) / ema20 * 100
@@ -136,13 +134,13 @@ def check_ema20_proximity(current_close: float, ema20: float) -> bool:
 
 
 def check_rsi_buy_zone(rsi: float) -> bool:
-    """RSI between 25 and 42 = buy zone."""
-    return 25 <= rsi <= 42
+    """RSI between 25 and 65 = buy zone (Phase 3 — widened)."""
+    return 25 <= rsi <= 65
 
 
 def check_rsi_sell_zone(rsi: float) -> bool:
-    """RSI between 58 and 75 = sell zone."""
-    return 58 <= rsi <= 75
+    """RSI between 35 and 75 = sell zone (Phase 3 — widened)."""
+    return 35 <= rsi <= 75
 
 
 def check_macd_turning_positive(macd_hist: float, macd_hist_prev: float) -> bool:
@@ -156,105 +154,184 @@ def check_macd_turning_negative(macd_hist: float, macd_hist_prev: float) -> bool
 
 
 # =============================================================================
-# BUY / SELL SIGNAL CHECKS
+# TEST MODE — unconditional BUY for end-to-end pipeline verification
+# Set TEST_MODE = True in main.py to activate. Remove when done.
 # =============================================================================
 
+def get_test_signal() -> dict:
+    """Returns an unconditional BUY signal. Used when TEST_MODE = True in main.py."""
+    return {"signal": True, "reasons": ["TEST MODE — unconditional BUY"], "mode": "test"}
+
+
+# =============================================================================
+# BUY / SELL SIGNAL CHECKS  [DUAL-MODE — disabled while TEST_MODE is active]
+# =============================================================================
+# TEST_MODE_DISABLED_START
+# Original dual-mode strategy (EMA20 proximity 0.15%, RSI 25-42/58-75, MACD required
+# in range mode). Kept for rollback. Do not delete.
+#
+# def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
+#                      news_clear: bool) -> dict:
+#     reasons = []
+#     mode = get_market_mode(h4_trend)
+#     if mode == "trend" and h4_trend != "uptrend":
+#         return {"signal": False, "reasons": [f"Trend mode active but trend is {h4_trend}, need uptrend for BUY"]}
+#     ema20 = h1_indicators.get("ema_20")
+#     rsi = h1_indicators.get("rsi_14")
+#     current_close = h1_indicators.get("current_close")
+#     macd_hist = h1_indicators.get("macd_histogram")
+#     macd_hist_prev = h1_indicators.get("macd_histogram_prev")
+#     if any(v is None for v in [ema20, rsi, current_close]):
+#         return {"signal": False, "reasons": ["Insufficient indicator data"]}
+#     if not check_ema20_proximity(current_close, ema20):
+#         distance_pct = abs(current_close - ema20) / ema20 * 100 if ema20 else 0
+#         reasons.append(f"Price not near EMA20 ({distance_pct:.3f}% away, need <= 0.15%)")
+#     if not check_rsi_buy_zone(rsi):
+#         reasons.append(f"RSI {rsi:.1f} outside buy zone (25-42)")
+#     if macd_hist is not None and macd_hist_prev is not None:
+#         if mode == "range" and not check_macd_turning_positive(macd_hist, macd_hist_prev):
+#             reasons.append(f"MACD histogram not turning positive ({macd_hist:.5f} <= {macd_hist_prev:.5f})")
+#     elif mode == "range":
+#         reasons.append("MACD data unavailable for range mode confirmation")
+#     if not news_clear:
+#         reasons.append("High-impact news event nearby")
+#     if not is_trading_session(session):
+#         reasons.append(f"Outside trading session ({session})")
+#     if reasons:
+#         return {"signal": False, "reasons": reasons, "mode": mode}
+#     return {"signal": True, "reasons": ["All BUY conditions met"], "mode": mode}
+#
+#
+# def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
+#                       news_clear: bool) -> dict:
+#     reasons = []
+#     mode = get_market_mode(h4_trend)
+#     if mode == "trend" and h4_trend != "downtrend":
+#         return {"signal": False, "reasons": [f"Trend mode active but trend is {h4_trend}, need downtrend for SELL"]}
+#     ema20 = h1_indicators.get("ema_20")
+#     rsi = h1_indicators.get("rsi_14")
+#     current_close = h1_indicators.get("current_close")
+#     macd_hist = h1_indicators.get("macd_histogram")
+#     macd_hist_prev = h1_indicators.get("macd_histogram_prev")
+#     if any(v is None for v in [ema20, rsi, current_close]):
+#         return {"signal": False, "reasons": ["Insufficient indicator data"]}
+#     if not check_ema20_proximity(current_close, ema20):
+#         distance_pct = abs(current_close - ema20) / ema20 * 100 if ema20 else 0
+#         reasons.append(f"Price not near EMA20 ({distance_pct:.3f}% away, need <= 0.15%)")
+#     if not check_rsi_sell_zone(rsi):
+#         reasons.append(f"RSI {rsi:.1f} outside sell zone (58-75)")
+#     if macd_hist is not None and macd_hist_prev is not None:
+#         if mode == "range" and not check_macd_turning_negative(macd_hist, macd_hist_prev):
+#             reasons.append(f"MACD histogram not turning negative ({macd_hist:.5f} >= {macd_hist_prev:.5f})")
+#     elif mode == "range":
+#         reasons.append("MACD data unavailable for range mode confirmation")
+#     if not news_clear:
+#         reasons.append("High-impact news event nearby")
+#     if not is_trading_session(session):
+#         reasons.append(f"Outside trading session ({session})")
+#     if reasons:
+#         return {"signal": False, "reasons": reasons, "mode": mode}
+#     return {"signal": True, "reasons": ["All SELL conditions met"], "mode": mode}
+# TEST_MODE_DISABLED_END
+
+
+# =============================================================================
+# STRATEGY (Phase 4 — Max Risk Demo)
+# =============================================================================
+# Phase 3 → Phase 4 changes:
+#   - Risk per trade: 5% default, cap raised to 10%
+#   - Trend filter: REMOVED — BUY/SELL allowed in any H4 trend/range condition
+#   - SL: 0.75× ATR (was 1.5×), TP: 2.5× ATR unchanged — R:R ≈ 1:3.3
+#   - SL-hit cooldown: REMOVED — re-enter immediately after SL hit
+#   - Consecutive-loss pause: REMOVED — bot never pauses for losses
+#   - Session filter: still removed (removed in Phase 3)
+#   - EMA50 proximity: 1.5% (unchanged from Phase 3)
+#   - RSI zones: 25-65 buy / 35-75 sell (unchanged from Phase 3)
+#   - AI confidence threshold: 45% flat (unchanged from Phase 3)
+
+def check_ema50_proximity(current_close: float, ema50: float) -> bool:
+    """Price within 1.5% of H1 EMA50 (Phase 3 — widened from 0.5%)."""
+    if not ema50:
+        return False
+    return abs(current_close - ema50) / ema50 * 100 <= 1.5
+
+
 def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
-                     news_clear: bool) -> dict:
-    """Check if all BUY entry conditions are met under dual-mode strategy."""
-    reasons = []
+                     news_clear: bool, positions: list | None = None) -> dict:
+    """
+    BUY conditions (Phase 4 — no trend filter).
+    Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
+    H4 trend is passed through for context/logging only — never blocks a trade.
+    """
     mode = get_market_mode(h4_trend)
-
-    # Trend mode requires uptrend; range mode allows buys regardless of EMA order
-    if mode == "trend" and h4_trend != "uptrend":
-        return {"signal": False, "reasons": [f"Trend mode active but trend is {h4_trend}, need uptrend for BUY"]}
-
-    ema20 = h1_indicators.get("ema_20")
+    ema50 = h1_indicators.get("ema_50")
     rsi = h1_indicators.get("rsi_14")
-    current_close = h1_indicators.get("current_close")
-    macd_hist = h1_indicators.get("macd_histogram")
-    macd_hist_prev = h1_indicators.get("macd_histogram_prev")
+    close = h1_indicators.get("current_close")
 
-    if any(v is None for v in [ema20, rsi, current_close]):
-        return {"signal": False, "reasons": ["Insufficient indicator data"]}
+    if any(v is None for v in [ema50, rsi, close]):
+        return {"signal": False, "reasons": ["Insufficient indicator data"], "mode": mode, "checks": {}}
 
-    # EMA20 proximity check
-    if not check_ema20_proximity(current_close, ema20):
-        distance_pct = abs(current_close - ema20) / ema20 * 100 if ema20 else 0
-        reasons.append(f"Price not near EMA20 ({distance_pct:.3f}% away, need <= 0.15%)")
+    ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
-    # RSI zone check
-    if not check_rsi_buy_zone(rsi):
-        reasons.append(f"RSI {rsi:.1f} outside buy zone (25-42)")
+    checks = {
+        "rsi_ok":      25 <= rsi <= 65,
+        "ema50_ok":    ema50_dist_pct <= 1.5,
+        "news_ok":     news_clear,
+        "no_dup_long": not any(p.get("direction") == "buy" for p in (positions or [])),
+    }
 
-    # MACD confirmation — required in Range Mode, optional boost in Trend Mode
-    if macd_hist is not None and macd_hist_prev is not None:
-        if mode == "range" and not check_macd_turning_positive(macd_hist, macd_hist_prev):
-            reasons.append(f"MACD histogram not turning positive ({macd_hist:.5f} <= {macd_hist_prev:.5f})")
-    elif mode == "range":
-        reasons.append("MACD data unavailable for range mode confirmation")
-
-    # News filter
-    if not news_clear:
+    reasons = []
+    if not checks["rsi_ok"]:
+        reasons.append(f"RSI {rsi:.1f} outside buy zone 25-65")
+    if not checks["ema50_ok"]:
+        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
+    if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
-
-    # Session filter
-    if not is_trading_session(session):
-        reasons.append(f"Outside trading session ({session})")
+    if not checks["no_dup_long"]:
+        reasons.append("Open BUY position already exists")
 
     if reasons:
-        return {"signal": False, "reasons": reasons, "mode": mode}
-
-    return {"signal": True, "reasons": ["All BUY conditions met"], "mode": mode}
+        return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}
+    return {"signal": True, "reasons": ["All BUY conditions met"], "mode": mode, "checks": checks}
 
 
 def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
-                      news_clear: bool) -> dict:
-    """Check if all SELL entry conditions are met under dual-mode strategy."""
-    reasons = []
+                      news_clear: bool, positions: list | None = None) -> dict:
+    """
+    SELL conditions (Phase 4 — no trend filter).
+    Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
+    H4 trend is passed through for context/logging only — never blocks a trade.
+    """
     mode = get_market_mode(h4_trend)
-
-    # Trend mode requires downtrend; range mode allows sells regardless
-    if mode == "trend" and h4_trend != "downtrend":
-        return {"signal": False, "reasons": [f"Trend mode active but trend is {h4_trend}, need downtrend for SELL"]}
-
-    ema20 = h1_indicators.get("ema_20")
+    ema50 = h1_indicators.get("ema_50")
     rsi = h1_indicators.get("rsi_14")
-    current_close = h1_indicators.get("current_close")
-    macd_hist = h1_indicators.get("macd_histogram")
-    macd_hist_prev = h1_indicators.get("macd_histogram_prev")
+    close = h1_indicators.get("current_close")
 
-    if any(v is None for v in [ema20, rsi, current_close]):
-        return {"signal": False, "reasons": ["Insufficient indicator data"]}
+    if any(v is None for v in [ema50, rsi, close]):
+        return {"signal": False, "reasons": ["Insufficient indicator data"], "mode": mode, "checks": {}}
 
-    # EMA20 proximity check
-    if not check_ema20_proximity(current_close, ema20):
-        distance_pct = abs(current_close - ema20) / ema20 * 100 if ema20 else 0
-        reasons.append(f"Price not near EMA20 ({distance_pct:.3f}% away, need <= 0.15%)")
+    ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
-    # RSI zone check
-    if not check_rsi_sell_zone(rsi):
-        reasons.append(f"RSI {rsi:.1f} outside sell zone (58-75)")
+    checks = {
+        "rsi_ok":       35 <= rsi <= 75,
+        "ema50_ok":     ema50_dist_pct <= 1.5,
+        "news_ok":      news_clear,
+        "no_dup_short": not any(p.get("direction") == "sell" for p in (positions or [])),
+    }
 
-    # MACD confirmation — required in Range Mode
-    if macd_hist is not None and macd_hist_prev is not None:
-        if mode == "range" and not check_macd_turning_negative(macd_hist, macd_hist_prev):
-            reasons.append(f"MACD histogram not turning negative ({macd_hist:.5f} >= {macd_hist_prev:.5f})")
-    elif mode == "range":
-        reasons.append("MACD data unavailable for range mode confirmation")
-
-    # News filter
-    if not news_clear:
+    reasons = []
+    if not checks["rsi_ok"]:
+        reasons.append(f"RSI {rsi:.1f} outside sell zone 35-75")
+    if not checks["ema50_ok"]:
+        reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
+    if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
-
-    # Session filter
-    if not is_trading_session(session):
-        reasons.append(f"Outside trading session ({session})")
+    if not checks["no_dup_short"]:
+        reasons.append("Open SELL position already exists")
 
     if reasons:
-        return {"signal": False, "reasons": reasons, "mode": mode}
-
-    return {"signal": True, "reasons": ["All SELL conditions met"], "mode": mode}
+        return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}
+    return {"signal": True, "reasons": ["All SELL conditions met"], "mode": mode, "checks": checks}
 
 
 # =============================================================================
@@ -263,8 +340,8 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
 
 def calculate_sl_tp(direction: str, entry_price: float, atr: float,
                     ema50: float) -> dict:
-    """Calculate stop-loss and take-profit levels."""
-    sl_distance = 1.5 * atr
+    """Calculate stop-loss and take-profit levels. Phase 4: SL=0.75×ATR, TP=2.5×ATR (R:R ≈ 1:3.3)."""
+    sl_distance = 0.75 * atr
     tp_distance = 2.5 * atr
 
     if direction == "buy":
@@ -272,13 +349,13 @@ def calculate_sl_tp(direction: str, entry_price: float, atr: float,
         tp = entry_price + tp_distance
         # SL must be below EMA50 for a buy
         if sl >= ema50:
-            sl = ema50 - (0.1 * atr)  # Just beyond EMA50
+            sl = ema50 - (0.05 * atr)  # Just beyond EMA50
     else:
         sl = entry_price + sl_distance
         tp = entry_price - tp_distance
         # SL must be above EMA50 for a sell
         if sl <= ema50:
-            sl = ema50 + (0.1 * atr)
+            sl = ema50 + (0.05 * atr)
 
     return {
         "stop_loss": round(sl, 5),
@@ -361,21 +438,8 @@ def check_weekend_close(positions: list[dict], atr: float,
 
 
 def check_cooldown(last_sl_hit_time: str | None, utc_now: datetime | None = None) -> bool:
-    """Check if cooldown period (2 H1 candles = 2 hours) has passed."""
-    if last_sl_hit_time is None:
-        return True  # No cooldown active
-
-    if utc_now is None:
-        utc_now = datetime.now(timezone.utc)
-
-    try:
-        sl_time = datetime.fromisoformat(last_sl_hit_time)
-        if sl_time.tzinfo is None:
-            sl_time = sl_time.replace(tzinfo=timezone.utc)
-        elapsed = utc_now - sl_time
-        return elapsed >= timedelta(hours=2)
-    except (ValueError, TypeError):
-        return True
+    """Phase 4: cooldown removed — always returns True (re-enter immediately after SL hit)."""
+    return True
 
 
 # =============================================================================

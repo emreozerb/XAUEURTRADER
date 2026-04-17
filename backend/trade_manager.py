@@ -11,35 +11,16 @@ from .config import bot_config
 
 logger = logging.getLogger(__name__)
 
+MAX_CONCURRENT_POSITIONS = 1  # hardcoded — approval flow removed
+
 
 class TradeManager:
     def __init__(self):
-        self.pending_signal: dict | None = None
-        self.pending_signal_time: datetime | None = None
         self.active_trade_db_id: int | None = None
 
-    def set_pending_signal(self, signal: dict):
-        """Set a pending signal awaiting approval."""
-        self.pending_signal = signal
-        self.pending_signal_time = datetime.now(timezone.utc)
-        bot_config.bot_status = "awaiting_approval"
-
-    def clear_pending_signal(self):
-        self.pending_signal = None
-        self.pending_signal_time = None
-        if bot_config.bot_running:
-            bot_config.bot_status = "running"
-
-    def is_signal_expired(self) -> bool:
-        """Check if pending signal is older than 15 minutes."""
-        if self.pending_signal_time is None:
-            return True
-        elapsed = (datetime.now(timezone.utc) - self.pending_signal_time).total_seconds()
-        return elapsed > 900  # 15 minutes
-
     async def execute_trade(self, direction: str, lot_size: float,
-                           sl: float, tp: float, ai_confidence: int,
-                           ai_reasoning: str) -> dict:
+                            sl: float, tp: float, ai_confidence: int,
+                            ai_reasoning: str) -> dict:
         """Execute a trade via MT5."""
         account = mt5_connector.get_account_info()
         if account is None:
@@ -54,7 +35,7 @@ class TradeManager:
             equity=account["equity"],
             open_positions=positions,
             risk_pct=bot_config.validate_risk(),
-            max_positions=bot_config.max_concurrent_positions,
+            max_positions=MAX_CONCURRENT_POSITIONS,
             symbol_info=mt5_connector.symbol_info or {},
         )
         if not validation["valid"]:
@@ -80,12 +61,10 @@ class TradeManager:
         }
         await log_trade(entry_data)
 
-        # Get the db ID of the trade we just logged
         trades = await get_last_n_trades(1)
         if trades:
             self.active_trade_db_id = trades[0]["id"]
 
-        self.clear_pending_signal()
         return {
             "success": True,
             "ticket": result["ticket"],
@@ -131,7 +110,6 @@ class TradeManager:
         if not result["success"]:
             return result
 
-        # Update trade log
         account = mt5_connector.get_account_info()
         exit_price = result.get("price", pos["current_price"])
         pips = (exit_price - pos["entry_price"]) if pos["direction"] == "buy" else (pos["entry_price"] - exit_price)
@@ -144,16 +122,15 @@ class TradeManager:
                 "result": "win" if pnl > 0 else "loss",
                 "pips": round(pips, 2),
                 "pnl_eur": round(pnl, 2),
-                "duration_minutes": 0,  # Calculate from entry
+                "duration_minutes": 0,
                 "exit_reason": reason,
                 "account_balance_at_exit": account["balance"] if account else None,
             })
             self.active_trade_db_id = None
 
-        # Track consecutive losses
         if pnl <= 0:
             bot_config.consecutive_losses += 1
-            bot_config.last_sl_hit_time = datetime.now(timezone.utc).isoformat()
+            # last_sl_hit_time no longer tracked — cooldown removed in Phase 4
         else:
             bot_config.consecutive_losses = 0
 
@@ -179,7 +156,6 @@ class TradeManager:
         return results
 
     def _calculate_risk_eur(self, lot_size: float, sl_distance: float) -> float:
-        """Calculate risk in EUR for a given lot size and SL distance."""
         symbol_info = mt5_connector.symbol_info or {}
         pip_value = symbol_info.get("pip_value", 1.0)
         tick_size = symbol_info.get("tick_size", 0.01)

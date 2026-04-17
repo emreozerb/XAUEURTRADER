@@ -13,7 +13,7 @@ const STATUS_LABELS = {
   running: 'Watching for signals',
   analyzing: 'Analyzing H1 close...',
   awaiting_approval: 'Signal detected — awaiting approval',
-  paused: 'Bot paused',
+  error: 'Bot stopped — error',
 };
 
 export default function LiveStatus({ trend, marketMode, session, sessionDisplay, botStatus, lastAnalysis, currentPrice }) {

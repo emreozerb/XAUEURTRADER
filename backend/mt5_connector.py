@@ -154,9 +154,9 @@ class MT5Connector:
             return result
 
     def get_candles(self, timeframe: str, count: int) -> pd.DataFrame | None:
-        """Get OHLCV candles. timeframe: 'H1' or 'H4'."""
+        """Get OHLCV candles. timeframe: 'M15', 'H1', or 'H4'."""
         with _mt5_lock:
-            tf_map = {"H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
+            tf_map = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
             tf = tf_map.get(timeframe)
             if tf is None:
                 return None
@@ -176,7 +176,7 @@ class MT5Connector:
     def get_candles_range(self, timeframe: str, date_from: datetime, date_to: datetime) -> pd.DataFrame | None:
         """Get historical candles for backtesting."""
         with _mt5_lock:
-            tf_map = {"H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
+            tf_map = {"M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4}
             tf = tf_map.get(timeframe)
             if tf is None:
                 return None
@@ -253,9 +253,21 @@ class MT5Connector:
                 return {"success": False, "error": "Order send returned None."}
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Map common retcodes to actionable messages
+                retcode_hints = {
+                    10027: "AutoTrading is disabled in MetaTrader 5 — click the AutoTrading button in the MT5 toolbar to enable it.",
+                    10014: "Invalid lot size.",
+                    10015: "Invalid price.",
+                    10016: "Invalid SL or TP.",
+                    10019: "Not enough money.",
+                    10025: "Trade context busy — MT5 is processing another request.",
+                    10026: "AutoTrading disabled by server.",
+                    10030: "Invalid order fill type — try a different filling mode.",
+                }
+                hint = retcode_hints.get(result.retcode, result.comment)
                 return {
                     "success": False,
-                    "error": f"Order failed: {result.retcode} - {result.comment}",
+                    "error": f"Order failed ({result.retcode}): {hint}",
                     "retcode": result.retcode,
                 }
 

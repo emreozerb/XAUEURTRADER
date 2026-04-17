@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -73,7 +73,7 @@ export default function ChartView() {
 
     try {
       const [candleRes, tradeRes] = await Promise.all([
-        fetch(`${API}/api/candles?timeframe=H1&count=500`),
+        fetch(`${API}/api/candles?timeframe=M15&count=800`),
         fetch(`${API}/api/chart/trades`),
       ]);
 
@@ -128,7 +128,7 @@ export default function ChartView() {
       markers.sort((a, b) => a.time - b.time);
 
       if (markers.length > 0) {
-        candleSeries.setMarkers(markers);
+        createSeriesMarkers(candleSeries, markers);
       }
 
       setTradeCount(trades.length);
@@ -149,7 +149,7 @@ export default function ChartView() {
   return (
     <div className="chart-view">
       <div className="chart-header">
-        <h3>XAUEUR H1 Chart</h3>
+        <h3>XAUEUR M15 Chart</h3>
         <div className="chart-controls">
           {tradeCount > 0 && (
             <span className="chart-trade-count">{tradeCount} trades</span>

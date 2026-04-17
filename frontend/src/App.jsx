@@ -3,13 +3,14 @@ import LoginScreen from './components/LoginScreen';
 import TopBar from './components/TopBar';
 import Settings from './components/Settings';
 import LiveStatus from './components/LiveStatus';
-import ApprovalCard from './components/ApprovalCard';
 import TradeCard from './components/TradeCard';
 import TradeLog from './components/TradeLog';
 import Performance from './components/Performance';
 import Backtest from './components/Backtest';
 import EmergencyButton from './components/EmergencyButton';
 import ChartView from './components/ChartView';
+import EventLog from './components/EventLog';
+import LogsTab from './components/LogsTab';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -22,7 +23,6 @@ export default function App() {
   const [account, setAccount] = useState(null);
   const [positions, setPositions] = useState([]);
   const [currentPrice, setCurrentPrice] = useState(null);
-  const [pendingSignal, setPendingSignal] = useState(null);
   const [trades, setTrades] = useState([]);
   const [performance, setPerformance] = useState(null);
   const [alerts, setAlerts] = useState([]);
@@ -36,6 +36,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [confirmClose, setConfirmClose] = useState(false);
   const [liveWarning, setLiveWarning] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [unreadErrors, setUnreadErrors] = useState(0);
   const wsRef = useRef(null);
   const alertIdRef = useRef(0);
 
@@ -80,7 +84,6 @@ export default function App() {
     setBotStatus('stopped');
     setAccount(null);
     setPositions([]);
-    setPendingSignal(null);
     localStorage.removeItem('xaueur_logged_in');
   };
 
@@ -94,18 +97,27 @@ export default function App() {
         const msg = JSON.parse(e.data);
         if (msg.type === 'status') {
           setBotStatus(msg.data.bot_status || botStatus);
+          if (msg.data.error_message !== undefined) setErrorMessage(msg.data.error_message);
           if (msg.data.trend) setTrend(msg.data.trend);
           if (msg.data.market_mode) setMarketMode(msg.data.market_mode);
           if (msg.data.session) setSession(msg.data.session);
           if (msg.data.session_display) setSessionDisplay(msg.data.session_display);
           if (msg.data.last_analysis) setLastAnalysis(msg.data.last_analysis);
-        } else if (msg.type === 'signal') {
-          setPendingSignal(msg.data);
         } else if (msg.type === 'trade_update') {
           if (msg.data.positions) setPositions(msg.data.positions);
           if (msg.data.account) setAccount(msg.data.account);
         } else if (msg.type === 'alert') {
           addAlert(msg.data.message, msg.data.level);
+        } else if (msg.type === 'log') {
+          setLogs(prev => {
+            const next = [...prev, msg.data].slice(-200);
+            return next;
+          });
+          if (msg.data.level === 'error') {
+            setUnreadErrors(n => n + 1);
+          }
+        } else if (msg.type === 'force_logout') {
+          handleLogout();
         }
       };
       ws.onclose = () => { setTimeout(connect, 3000); };
@@ -124,10 +136,10 @@ export default function App() {
         const data = await res.json();
         setConnected(data.connected);
         setBotStatus(data.bot_status);
+        if (data.error_message !== undefined) setErrorMessage(data.error_message);
         if (data.account) setAccount(data.account);
         if (data.positions) setPositions(data.positions);
         if (data.current_price) setCurrentPrice(data.current_price);
-        if (data.pending_signal) setPendingSignal(data.pending_signal);
       } catch { /* backend not ready */ }
     };
     poll();
@@ -149,6 +161,20 @@ export default function App() {
     };
     fetchData();
     const iv = setInterval(fetchData, 15000);
+    return () => clearInterval(iv);
+  }, [loggedIn]);
+
+  // Fetch event log
+  useEffect(() => {
+    if (!loggedIn) return;
+    const fetchEvents = async () => {
+      try {
+        const res = await fetch(`${API}/api/events`);
+        if (res.ok) setEvents(await res.json());
+      } catch { /* backend not ready */ }
+    };
+    fetchEvents();
+    const iv = setInterval(fetchEvents, 10000);
     return () => clearInterval(iv);
   }, [loggedIn]);
 
@@ -178,20 +204,6 @@ export default function App() {
     } catch { addAlert('Failed to stop bot', 'error'); }
   };
 
-  const handleApprove = async (approved, manualLot) => {
-    try {
-      const res = await fetch(`${API}/api/approve`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved, manual_lot: manualLot }),
-      });
-      const data = await res.json();
-      setPendingSignal(null);
-      if (!approved) addAlert('Signal rejected', 'info');
-      else if (data.success) addAlert('Trade executed', 'success');
-      else addAlert(data.error || data.detail || 'Trade failed', 'error');
-    } catch { addAlert('Approval failed', 'error'); }
-  };
-
   const handleEmergencyClose = async () => {
     try {
       await fetch(`${API}/api/emergency-close`, { method: 'POST' });
@@ -210,6 +222,7 @@ export default function App() {
   return (
     <div className="app">
       <TopBar connected={connected} account={account} botStatus={botStatus}
+        errorMessage={errorMessage}
         onToggleSettings={() => setSettingsOpen(!settingsOpen)}
         onLogout={handleLogout} />
 
@@ -225,17 +238,47 @@ export default function App() {
               onClick={() => setActiveTab('dashboard')}>Dashboard</button>
             <button className={`tab-btn ${activeTab === 'chart' ? 'active' : ''}`}
               onClick={() => setActiveTab('chart')}>Chart</button>
+            <button
+              className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
+              onClick={() => { setActiveTab('logs'); setUnreadErrors(0); }}
+              style={{ position: 'relative' }}
+            >
+              Logs
+              {unreadErrors > 0 && activeTab !== 'logs' && (
+                <span className="tab-error-badge">{unreadErrors > 99 ? '99+' : unreadErrors}</span>
+              )}
+            </button>
           </div>
 
           {activeTab === 'dashboard' && (
             <>
+              {botStatus === 'error' && errorMessage && (
+                <div style={{
+                  margin: '12px 16px 0',
+                  padding: '12px 16px',
+                  borderRadius: 7,
+                  background: 'rgba(255,71,87,0.10)',
+                  border: '1px solid rgba(255,71,87,0.45)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                }}>
+                  <span style={{ fontSize: 20, lineHeight: 1, color: 'var(--accent-red)', flexShrink: 0 }}>⚠</span>
+                  <div>
+                    <div style={{ color: 'var(--accent-red)', fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                      Bot stopped — error
+                    </div>
+                    <div style={{ color: 'var(--text-primary)', fontSize: 13 }}>{errorMessage}</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 6 }}>
+                      Fix the issue, then press <strong>Start Bot</strong> to resume.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <LiveStatus trend={trend} marketMode={marketMode} session={session}
                 sessionDisplay={sessionDisplay} botStatus={botStatus}
                 lastAnalysis={lastAnalysis} currentPrice={currentPrice} />
-
-              {pendingSignal && (
-                <ApprovalCard signal={pendingSignal} onApprove={handleApprove} />
-              )}
 
               {positions.map(pos => (
                 <TradeCard key={pos.ticket} position={pos} />
@@ -247,6 +290,10 @@ export default function App() {
 
           {activeTab === 'chart' && (
             <ChartView />
+          )}
+
+          {activeTab === 'logs' && (
+            <LogsTab logs={logs} />
           )}
         </div>
       </div>

@@ -17,47 +17,43 @@ logger = logging.getLogger(__name__)
 #   - [single confidence threshold of 70%]
 # """
 
-SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using a dual-mode strategy. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
+SYSTEM_PROMPT = """You are a professional XAUEUR trading analyst using an aggressive max-frequency strategy. Your job is to analyze the current market data and decide whether to enter a trade, hold, or close an existing position.
 
-DUAL-MODE STRATEGY (you must follow these strictly):
+PHASE 4 STRATEGY (follow these rules strictly):
 
-MODE DETECTION:
-- The system tells you which mode is active: TREND or RANGE.
-- TREND MODE: 4H EMA50 and EMA200 are clearly separated (>0.3% of price). Trade pullbacks in the direction of the trend.
-  - Only BUY in an uptrend (4H EMA 50 > EMA 200)
-  - Only SELL in a downtrend (4H EMA 50 < EMA 200)
-- RANGE MODE: 4H EMA50 and EMA200 are close together (<=0.3% of price). Trade mean reversion.
-  - Both BUY and SELL are allowed based on RSI zone and MACD confirmation.
+TIMEFRAMES:
+- Signals are evaluated on M15 candle closes (15-minute chart)
+- H4 indicators are provided as context only — they do NOT filter trades
 
 ENTRY CONDITIONS (all must be met):
-1. Price is within 0.15% of EMA20 on H1 (proximity confirmed — see ema20_proximity field)
-2. RSI zone:
-   - BUY: RSI 14 between 25 and 42 (see rsi_zone field)
-   - SELL: RSI 14 between 58 and 75
-3. MACD histogram (12, 26, 9):
-   - BUY: histogram turning positive (current > previous — see macd_direction field)
-   - SELL: histogram turning negative (current < previous)
-   - In TREND mode, MACD is a bonus confirmation. In RANGE mode, MACD is required.
-4. No high-impact news within 30 min before / 15 min after
-5. Valid session: Early London (06-08 UTC), London (08-16 UTC), or New York (12-21 UTC)
+1. EMA50 proximity: price is within 1.5% of M15 EMA50
+2. RSI zone (M15 RSI 14):
+   - BUY:  RSI between 25 and 65
+   - SELL: RSI between 35 and 75
+3. No high-impact news within 30 min before / 15 min after (see upcoming_events)
+4. No duplicate position in the same direction already open
 
-RISK MANAGEMENT (unchanged):
-- Stop-loss: 1.5x ATR from entry
-- Take-profit: 2.5x ATR from entry, then trail at 1x ATR below/above EMA 50
-- No trading during Asian session unless confidence > 85
+TREND FILTER: NONE — BUY and SELL are both allowed in any market condition (uptrend, downtrend, range). H4 EMA50/EMA200 trend data is provided for your situational awareness and reasoning only. Do not use it to block trades.
 
-CONFIDENCE THRESHOLDS:
-- TREND mode: minimum 70% to recommend a trade
-- RANGE mode: minimum 60% to recommend a trade
+SESSION: No session restriction — trade all sessions 24/5 (session shown for context only).
 
-ANALYSIS FRAMEWORK (evaluate each point):
-1. Which mode is active (Trend or Range) and is the setup appropriate for that mode?
-2. Is price near EMA20? Is the RSI in the correct zone?
-3. Is the MACD histogram confirming the direction?
-4. Is there a news event that could invalidate this setup?
-5. Is the risk-reward ratio at least 1:1.67?
-6. Does the current session support this trade?
-7. What do recent trade results suggest about current market conditions?
+RISK MANAGEMENT:
+- Stop-loss: 0.75× ATR from entry (tight stop — high frequency)
+- Take-profit: 2.5× ATR from entry
+- Risk/reward ≈ 1:3.3
+- Trailing stop: activates after 1.5× ATR profit, trails at 1× ATR below/above M15 EMA50
+- Maximum drawdown: 20% of balance — bot stops if exceeded (enforced by system)
+
+CONFIDENCE THRESHOLD: minimum 45% to recommend a trade. Express genuine confidence — do not inflate scores.
+
+ANALYSIS FRAMEWORK (evaluate each point explicitly):
+1. Is price within 1.5% of M15 EMA50?
+2. Is M15 RSI in the correct zone (25-65 buy / 35-75 sell)?
+3. Are any high-impact news events nearby?
+4. Is there already an open position in the same direction?
+5. What does the H4 trend context suggest about likely direction? (informational only)
+6. Is the risk-reward favourable (SL 0.75× ATR, TP 2.5× ATR, R:R ≈ 1:3.3)?
+7. What do recent trade results suggest about current conditions?
 8. For open positions: should the trailing stop be updated? Should the position be closed early?
 
 In your reasoning, EXPLICITLY STATE which conditions are met and which are not.
@@ -80,22 +76,63 @@ class AIEngine:
         self.client = None
         self.consecutive_failures = 0
         self.last_analysis_candle = None
+        self.last_error_reason: str | None = None  # human-readable cause of last failure
+        self.last_error_is_fatal: bool = False      # True = will never self-heal (bad key, no credits)
 
     def initialize(self, api_key: str):
+        import os
+        import inspect
+        caller_file = inspect.stack()[1].filename
+        masked = f"{api_key[:18]}...{api_key[-6:]}" if len(api_key) > 24 else f"({len(api_key)} chars — too short)"
+        env_key = (os.environ.get("ANTHROPIC_API_KEY") or "")
+        env_masked = f"{env_key[:18]}...{env_key[-6:]}" if len(env_key) > 24 else f"not set or too short"
+        logger.info(
+            f"AI engine initialising | caller={caller_file} | "
+            f"key-in-use={masked} | env-key={env_masked} | match={'YES' if api_key == env_key else 'NO'}"
+        )
         self.client = anthropic.Anthropic(api_key=api_key)
         self.consecutive_failures = 0
+        self.last_error_reason = None
+        self.last_error_is_fatal = False
+
+    def _classify_api_error(self, exc: anthropic.APIError) -> str:
+        """Return a clear human-readable reason for an Anthropic API error."""
+        # Out-of-credits: status 402, or 400/403 with billing message
+        if hasattr(exc, "status_code"):
+            code = exc.status_code
+            body = str(exc).lower()
+            if code == 402 or (code in (400, 403) and any(
+                kw in body for kw in ("credit", "billing", "balance", "payment")
+            )):
+                return (
+                    "Anthropic credits exhausted — add credits at "
+                    "console.anthropic.com/settings/billing"
+                )
+            if code == 401:
+                return "Invalid Anthropic API key — check Settings."
+            if code == 403:
+                return "Anthropic API access denied — check your API key permissions."
+            if code == 429:
+                return "Anthropic rate limit reached — too many requests. Bot will retry."
+            if code == 529 or code >= 500:
+                return f"Anthropic API overloaded or down (HTTP {code}) — will retry."
+        if isinstance(exc, anthropic.APIConnectionError):
+            return "Cannot reach Anthropic API — check internet connection."
+        if isinstance(exc, anthropic.APITimeoutError):
+            return "Anthropic API request timed out — will retry."
+        return f"Anthropic API error: {exc}"
 
     async def analyze(self, data_packet: dict) -> dict | None:
         """Send market data to Claude and get trading decision."""
         if self.client is None:
+            self.last_error_reason = "AI engine not initialised — API key missing."
             return None
 
-        # Build the user message with all market data
-        user_message = f"""Current market data for XAUEUR analysis:
+        user_message = f"""Current M15 candle close — XAUEUR market data:
 
 {json.dumps(data_packet, indent=2, default=str)}
 
-Analyze this data according to the dual-mode strategy rules and provide your trading decision."""
+Analyze this data according to the Phase 3 strategy rules and provide your trading decision."""
 
         try:
             response = self.client.messages.create(
@@ -105,10 +142,9 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # Parse the response
             text = response.content[0].text.strip()
 
-            # Try to extract JSON from the response
+            # Strip markdown code fences if present
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -116,59 +152,127 @@ Analyze this data according to the dual-mode strategy rules and provide your tra
                 text = text.strip()
 
             result = json.loads(text)
-            self.consecutive_failures = 0
 
             # Validate required fields
             required = ["action", "confidence", "reasoning"]
             for field in required:
                 if field not in result:
                     logger.error(f"AI response missing field: {field}")
+                    self.last_error_reason = f"AI returned incomplete JSON (missing '{field}')."
+                    self.consecutive_failures += 1
                     return None
 
-            # Ensure confidence is an integer
             result["confidence"] = int(result["confidence"])
-
+            self.consecutive_failures = 0
+            self.last_error_reason = None
+            self.last_error_is_fatal = False
             return result
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response as JSON: {e}")
-            self.consecutive_failures += 1
-            return None
-        except anthropic.APIError as e:
-            logger.error(f"Anthropic API error: {e}")
-            self.consecutive_failures += 1
-            return None
-        except Exception as e:
-            logger.error(f"AI analysis error: {e}")
+            reason = f"AI returned invalid JSON — could not parse response: {e}"
+            logger.error(reason)
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False
             self.consecutive_failures += 1
             return None
 
-    def build_data_packet(self, price: dict, h1_candles_json: list,
-                          h4_candles_json: list, h1_indicators: dict,
+        except anthropic.AuthenticationError as e:
+            import os
+            key_in_client = (self.client.api_key if hasattr(self.client, "api_key") else "unknown")
+            env_key = (os.environ.get("ANTHROPIC_API_KEY") or "")
+            masked_client = f"{key_in_client[:18]}...{key_in_client[-6:]}" if len(key_in_client) > 24 else f"({len(key_in_client)} chars)"
+            masked_env = f"{env_key[:18]}...{env_key[-6:]}" if len(env_key) > 24 else "not set"
+            reason = "Invalid Anthropic API key — check Settings."
+            logger.error(
+                f"{reason} | key-sent-to-api={masked_client} | env-ANTHROPIC_API_KEY={masked_env} | {e}"
+            )
+            self.last_error_reason = reason
+            self.last_error_is_fatal = True   # key won't fix itself
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.PermissionDeniedError as e:
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | {e}")
+            # Credits exhausted is fatal; other 403s may be transient
+            self.last_error_is_fatal = "credit" in reason.lower() or "billing" in reason.lower()
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.RateLimitError as e:
+            reason = self._classify_api_error(e)
+            logger.warning(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False  # rate limit is transient
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APIStatusError as e:
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | status={e.status_code} | {e}")
+            # 401 via generic status path is also fatal
+            self.last_error_is_fatal = e.status_code == 401 or e.status_code == 402
+            self.last_error_reason = reason
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APIConnectionError as e:
+            reason = "Cannot reach Anthropic API — check internet connection."
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APITimeoutError as e:
+            reason = "Anthropic API request timed out — will retry next candle."
+            logger.warning(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False
+            self.consecutive_failures += 1
+            return None
+
+        except anthropic.APIError as e:
+            reason = self._classify_api_error(e)
+            logger.error(f"{reason} | {e}")
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False
+            self.consecutive_failures += 1
+            return None
+
+        except Exception as e:
+            reason = f"Unexpected AI error: {type(e).__name__}: {e}"
+            logger.error(reason, exc_info=True)
+            self.last_error_reason = reason
+            self.last_error_is_fatal = False
+            self.consecutive_failures += 1
+            return None
+
+    def build_data_packet(self, price: dict, m15_candles_json: list,
+                          h4_candles_json: list, m15_indicators: dict,
                           h4_indicators: dict, trend: str, account: dict,
                           positions: list, upcoming_events: list,
                           session: str, last_trades: list,
                           risk_pct: float, max_lot: float,
                           market_mode: str = "trend",
                           session_display: str = "",
-                          ema20_proximity: bool = False,
-                          rsi_zone: str = "neutral",
-                          macd_direction: str = "neutral") -> dict:
+                          ema50_proximity: bool = False,
+                          rsi_zone: str = "neutral") -> dict:
         """Build the data packet to send to Claude."""
         return {
             "current_price": price,
-            "h1_candles": f"[{len(h1_candles_json)} candles, latest: {h1_candles_json[-1] if h1_candles_json else 'none'}]",
+            "m15_candles": f"[{len(m15_candles_json)} candles, latest: {m15_candles_json[-1] if m15_candles_json else 'none'}]",
             "h4_candles": f"[{len(h4_candles_json)} candles, latest: {h4_candles_json[-1] if h4_candles_json else 'none'}]",
             "indicators": {
-                "h1": h1_indicators,
+                "m15": m15_indicators,
                 "h4": h4_indicators,
             },
             "trend": trend,
             "market_mode": market_mode,
             "active_session": session_display or session,
-            "ema20_proximity": ema20_proximity,
+            "ema50_proximity": ema50_proximity,
             "rsi_zone": rsi_zone,
-            "macd_direction": macd_direction,
             "account": account,
             "open_positions": positions,
             "upcoming_events": upcoming_events,
