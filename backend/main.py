@@ -206,14 +206,15 @@ async def start_bot():
     if account:
         bot_config.start_balance = account["balance"]
 
-    # Cancel any existing tasks before starting new ones — prevents duplicate loops
-    for task in [_bot_task, _monitor_task, _connection_task]:
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+    # Cancel any existing tasks before starting new ones — prevents duplicate loops.
+    # asyncio.shield() must NOT be used here — it prevents wait_for from cancelling the task.
+    old_tasks = [t for t in [_bot_task, _monitor_task, _connection_task] if t and not t.done()]
+    for task in old_tasks:
+        task.cancel()
+    if old_tasks:
+        # Wait up to 3 s for all old tasks to finish. gather() with return_exceptions
+        # means we don't raise even if tasks raise CancelledError.
+        await asyncio.wait(old_tasks, timeout=3.0)
 
     bot_config.bot_running = True
     bot_config.bot_status = "running"
@@ -371,9 +372,15 @@ async def websocket_endpoint(websocket: WebSocket):
 async def _analysis_loop():
     """Main analysis loop — triggers every M15 candle close."""
     last_candle_time = None
+    me = asyncio.current_task()
     logger.info("Analysis loop started.")
 
     while bot_config.bot_running:
+        # If a newer _analysis_loop was spawned (Start Bot pressed again), exit silently.
+        if me is not _bot_task:
+            logger.info("Analysis loop: superseded by newer task — exiting.")
+            break
+
         try:
             await asyncio.sleep(10)  # Check every 10 seconds
 
@@ -784,8 +791,12 @@ async def _run_analysis_cycle_inner(m15_candles):
 
 async def _position_monitor_loop():
     """Monitor open positions every 5 seconds for live P&L updates."""
+    me = asyncio.current_task()
     logger.info("Position monitor started.")
     while bot_config.bot_running:
+        if me is not _monitor_task:
+            logger.info("Position monitor: superseded by newer task — exiting.")
+            break
         try:
             await asyncio.sleep(5)
             if not mt5_connector.connected:
@@ -861,9 +872,13 @@ async def _connection_monitor_loop():
 async def _connection_check_loop():
     """Check MT5 connection every 10 seconds (runs while bot is running)."""
     retry_count = 0
+    me = asyncio.current_task()
     logger.info("Connection checker started.")
 
     while bot_config.bot_running:
+        if me is not _connection_task:
+            logger.info("Connection checker: superseded by newer task — exiting.")
+            break
         try:
             await asyncio.sleep(10)
             if not mt5_connector.check_connection():
