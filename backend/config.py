@@ -1,11 +1,17 @@
 """Configuration management for the trading bot."""
 
 import os
+from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from the project root (directory containing backend/).
+# Using an explicit path + override=True ensures:
+#   1. The correct .env is found regardless of the server's working directory.
+#   2. Values in .env always win over any pre-existing OS environment variables.
+_env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=_env_path, override=True)
 
 
 class Settings(BaseSettings):
