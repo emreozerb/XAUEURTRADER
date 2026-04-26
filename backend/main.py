@@ -309,6 +309,27 @@ async def get_calendar():
     return {"events": events}
 
 
+@app.post("/api/debug/test-order")
+async def debug_test_order():
+    """Fire a single test BUY at min lot to verify the full pipeline. Demo only."""
+    if not mt5_connector.connected:
+        raise HTTPException(400, "MT5 not connected.")
+    price = mt5_connector.get_current_price()
+    sym = mt5_connector.symbol_info or {}
+    if not price:
+        raise HTTPException(400, "Cannot get current price.")
+    ask = price["ask"]
+    min_lot = sym.get("min_lot", 0.01)
+    sl = round(ask - 5.0, 2)
+    tp = round(ask + 10.0, 2)
+    logger.warning(f"[DEBUG] Test order: BUY {min_lot} @ {ask} SL={sl} TP={tp}")
+    result = await trade_manager.execute_trade(
+        direction="buy", lot_size=min_lot, sl=sl, tp=tp,
+        ai_confidence=99, ai_reasoning="DEBUG test order"
+    )
+    return {"request": {"direction":"buy","lot":min_lot,"price":ask,"sl":sl,"tp":tp}, "result": result}
+
+
 @app.get("/api/candles")
 async def get_candles(timeframe: str = "M15", count: int = 800):
     """Fetch OHLCV candles from MT5 for the chart view."""
