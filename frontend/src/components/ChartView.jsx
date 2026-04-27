@@ -7,12 +7,16 @@ export default function ChartView() {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
+  const disposedRef = useRef(false);
+  const abortRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tradeCount, setTradeCount] = useState(0);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
+
+    disposedRef.current = false;
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
@@ -53,29 +57,64 @@ export default function ChartView() {
     // Fetch data
     fetchData(candleSeries, chart);
 
-    // Handle resize
+    // Handle resize — guard against disposed chart
     const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+      if (disposedRef.current) return;
+      if (chartContainerRef.current && chartRef.current === chart) {
+        try {
+          chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+        } catch {
+          /* chart was disposed mid-frame — ignore */
+        }
       }
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
+      // Mark disposed FIRST so any pending fetch/raf bails out early
+      disposedRef.current = true;
       window.removeEventListener('resize', handleResize);
-      chart.remove();
+
+      // Abort any in-flight fetches so their .then() doesn't touch a dead chart
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+
+      // Defer remove() to the next tick so any queued paint (from
+      // lightweight-charts' internal ResizeObserver) finishes against
+      // the still-live chart before we tear it down.
+      setTimeout(() => {
+        try {
+          chart.remove();
+        } catch {
+          /* already removed — ignore */
+        }
+      }, 0);
     };
   }, []);
 
   const fetchData = async (candleSeries, chart) => {
+    // Cancel any previous in-flight fetch
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setError('');
 
     try {
       const [candleRes, tradeRes] = await Promise.all([
-        fetch(`${API}/api/candles?timeframe=M15&count=800`),
-        fetch(`${API}/api/chart/trades`),
+        fetch(`${API}/api/candles?timeframe=M15&count=800`, { signal: controller.signal }),
+        fetch(`${API}/api/chart/trades`, { signal: controller.signal }),
       ]);
+
+      if (disposedRef.current) return;
 
       if (!candleRes.ok) {
         throw new Error('Failed to fetch candles');
@@ -84,11 +123,16 @@ export default function ChartView() {
       const candles = await candleRes.json();
       const trades = tradeRes.ok ? await tradeRes.json() : [];
 
+      if (disposedRef.current) return;
+
       if (candles.length === 0) {
         setError('No candle data available');
         setLoading(false);
         return;
       }
+
+      // Re-check chart identity in case a refresh + remount happened
+      if (chartRef.current !== chart || candleSeriesRef.current !== candleSeries) return;
 
       candleSeries.setData(candles);
 
@@ -134,13 +178,16 @@ export default function ChartView() {
       setTradeCount(trades.length);
       chart.timeScale().fitContent();
     } catch (e) {
+      // Aborted fetches throw — silence them
+      if (e.name === 'AbortError' || disposedRef.current) return;
       setError(e.message || 'Failed to load chart data');
+    } finally {
+      if (!disposedRef.current) setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const handleRefresh = () => {
+    if (disposedRef.current) return;
     if (candleSeriesRef.current && chartRef.current) {
       fetchData(candleSeriesRef.current, chartRef.current);
     }
