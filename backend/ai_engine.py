@@ -2,9 +2,53 @@
 
 import json
 import logging
+import re
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json_object(text: str) -> str | None:
+    """
+    Extract the first balanced JSON object from a string.
+    Handles AI responses that wrap JSON in prose, code fences, or extra text.
+    Returns the JSON substring or None if no object found.
+    """
+    if not text:
+        return None
+
+    # Strip markdown code fences anywhere in the string
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        return fence.group(1)
+
+    # Find first '{' and walk forward to its matching '}', respecting strings
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
 
 # =============================================================================
 # OLD SYSTEM PROMPT (kept for rollback reference)
@@ -142,39 +186,69 @@ Analyze this data according to the Phase 3 strategy rules and provide your tradi
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            text = response.content[0].text.strip()
+            raw_text = (response.content[0].text or "").strip() if response.content else ""
 
-            # Strip markdown code fences if present
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
+            if not raw_text:
+                stop_reason = getattr(response, "stop_reason", "unknown")
+                usage = getattr(response, "usage", None)
+                logger.error(
+                    f"AI returned empty response | stop_reason={stop_reason} | usage={usage}"
+                )
+                self.last_error_reason = (
+                    f"AI returned empty response (stop_reason={stop_reason}). "
+                    "Likely max_tokens too low or content filter."
+                )
+                self.last_error_is_fatal = False
+                self.consecutive_failures += 1
+                return None
 
-            result = json.loads(text)
+            # Extract JSON object from the response (handles prose-wrapped or fenced output)
+            json_text = _extract_json_object(raw_text)
+            if json_text is None:
+                preview = raw_text[:500].replace("\n", " ")
+                logger.error(
+                    f"AI response contained no JSON object. Raw text (first 500 chars): {preview}"
+                )
+                self.last_error_reason = (
+                    "AI returned prose without JSON. See logs for raw response."
+                )
+                self.last_error_is_fatal = False
+                self.consecutive_failures += 1
+                return None
+
+            try:
+                result = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                preview = json_text[:500].replace("\n", " ")
+                logger.error(
+                    f"AI returned malformed JSON: {e} | extracted: {preview}"
+                )
+                self.last_error_reason = f"AI returned malformed JSON — {e}"
+                self.last_error_is_fatal = False
+                self.consecutive_failures += 1
+                return None
 
             # Validate required fields
             required = ["action", "confidence", "reasoning"]
             for field in required:
                 if field not in result:
-                    logger.error(f"AI response missing field: {field}")
+                    logger.error(f"AI response missing field: {field} | raw: {raw_text[:300]}")
                     self.last_error_reason = f"AI returned incomplete JSON (missing '{field}')."
                     self.consecutive_failures += 1
                     return None
 
-            result["confidence"] = int(result["confidence"])
+            try:
+                result["confidence"] = int(float(result["confidence"]))
+            except (ValueError, TypeError):
+                logger.error(f"AI returned non-numeric confidence: {result.get('confidence')!r}")
+                self.last_error_reason = "AI returned non-numeric confidence value."
+                self.consecutive_failures += 1
+                return None
+
             self.consecutive_failures = 0
             self.last_error_reason = None
             self.last_error_is_fatal = False
             return result
-
-        except json.JSONDecodeError as e:
-            reason = f"AI returned invalid JSON — could not parse response: {e}"
-            logger.error(reason)
-            self.last_error_reason = reason
-            self.last_error_is_fatal = False
-            self.consecutive_failures += 1
-            return None
 
         except anthropic.AuthenticationError as e:
             import os
