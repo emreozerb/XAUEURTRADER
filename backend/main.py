@@ -641,7 +641,11 @@ async def _run_analysis_cycle_inner(m15_candles):
     if signal_direction is None:
         # Neither direction qualifies — log top reason and skip AI call
         top_reason = (buy_chk["reasons"] + sell_chk["reasons"])[0] if (buy_chk["reasons"] or sell_chk["reasons"]) else "no setup"
-        logger.info(f"No signal this candle. Buy: {buy_chk['reasons']} | Sell: {sell_chk['reasons']}")
+        logger.info(
+            f"DECISION | NO TRADE — strategy gate failed (AI not consulted). "
+            f"Buy blockers: {buy_chk['reasons'] or 'none'} | "
+            f"Sell blockers: {sell_chk['reasons'] or 'none'}"
+        )
         await log_analysis({
             "timestamp": utc_now.isoformat(), "xaueur_price": price.get("bid"),
             "m15_ema50": ema50_m15, "m15_ema200": m15_ind.get("ema_200"),
@@ -707,21 +711,35 @@ async def _run_analysis_cycle_inner(m15_candles):
 
     confidence = ai_result["confidence"]
     action = ai_result["action"]
+    ai_reason_short = (ai_result.get("reasoning") or "").strip().replace("\n", " ")[:200]
 
     # Handle AI actions
     MIN_CONFIDENCE = 45  # Phase 3 — lowered from 60%, flat regardless of mode/session
+
+    logger.info(
+        f"AI VERDICT | strategy_signal={signal_direction.upper()} → "
+        f"ai_action={action.upper()} confidence={confidence}% | "
+        f"reasoning: {ai_reason_short}"
+    )
 
     if action in ("buy", "sell"):
         # Check cooldown
         if not check_cooldown(bot_config.last_sl_hit_time, utc_now):
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": "cooldown_active"})
+            logger.info(
+                f"DECISION | NO TRADE — cooldown active after recent SL hit "
+                f"(last_sl_hit={bot_config.last_sl_hit_time}). AI wanted {action.upper()} @ {confidence}%."
+            )
             bot_config.bot_status = "running"
             return
 
         # Flat 45% confidence threshold
         if confidence < MIN_CONFIDENCE:
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": f"low_confidence_{confidence}_min_{MIN_CONFIDENCE}"})
-            logger.info(f"AI confidence {confidence}% below threshold {MIN_CONFIDENCE}% — skipping")
+            logger.info(
+                f"DECISION | NO TRADE — AI confidence {confidence}% < {MIN_CONFIDENCE}% threshold. "
+                f"AI wanted {action.upper()}. Reasoning: {ai_reason_short}"
+            )
             bot_config.bot_status = "running"
             return
 
@@ -746,6 +764,10 @@ async def _run_analysis_cycle_inner(m15_candles):
 
         if not lot_calc["valid"]:
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": lot_calc["error"]})
+            logger.info(
+                f"DECISION | NO TRADE — risk manager rejected lot sizing: {lot_calc['error']}. "
+                f"AI wanted {action.upper()} @ {confidence}% (entry={entry_price} sl={sl} tp={tp})."
+            )
             await log_and_alert(
                 f"Lot size calculation failed — trade skipped: {lot_calc['error']}", "warning", "risk"
             )
@@ -793,6 +815,10 @@ async def _run_analysis_cycle_inner(m15_candles):
     else:
         # Hold
         await log_analysis({**analysis_data, "executed": 0, "skipped_reason": "hold"})
+        logger.info(
+            f"DECISION | NO TRADE — AI returned HOLD despite valid {signal_direction.upper()} setup "
+            f"(confidence {confidence}%). Reasoning: {ai_reason_short}"
+        )
 
     if bot_config.bot_status == "analyzing":
         bot_config.bot_status = "running"
