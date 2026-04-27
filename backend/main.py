@@ -283,9 +283,13 @@ async def run_backtest_endpoint(config: BacktestConfig):
 
     now = datetime.now(timezone.utc)
     from_date = now - timedelta(days=config.period_months * 30)
+    # H4 EMA200 needs ~250 H4 candles ≈ 42 trading days. Pull at least 4 months
+    # of H4 history regardless of user-selected period so EMA200 has values from
+    # the start of the M15 backtest window.
+    h4_from_date = min(from_date, now - timedelta(days=120))
 
     m15_candles = mt5_connector.get_candles_range("M15", from_date, now)
-    h4_candles = mt5_connector.get_candles_range("H4", from_date, now)
+    h4_candles = mt5_connector.get_candles_range("H4", h4_from_date, now)
 
     if m15_candles is None or h4_candles is None:
         raise HTTPException(400, "Could not fetch historical data from MT5.")
@@ -475,7 +479,7 @@ async def _run_analysis_cycle_inner(m15_candles):
     utc_now = datetime.now(timezone.utc)
 
     # Fetch data
-    h4_candles = mt5_connector.get_candles("H4", 50)
+    h4_candles = mt5_connector.get_candles("H4", 250)
     price = mt5_connector.get_current_price()
     account = mt5_connector.get_account_info()
     positions = mt5_connector.get_positions()
@@ -484,6 +488,7 @@ async def _run_analysis_cycle_inner(m15_candles):
         logger.warning("[MT5] Could not fetch H4 candles — MT5 may be temporarily unavailable.")
         bot_config.bot_status = "running"
         return
+    logger.info(f"H4 candles fetched: {len(h4_candles)} (need 250+ for EMA200)")
     if price is None:
         logger.warning("[MT5] Could not fetch current price tick — MT5 may be temporarily unavailable.")
         bot_config.bot_status = "running"

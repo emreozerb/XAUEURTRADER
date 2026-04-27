@@ -33,8 +33,8 @@ def run_backtest(m15_candles: pd.DataFrame, h4_candles: pd.DataFrame,
     if m15_candles is None or h4_candles is None:
         return {"error": "Insufficient historical data."}
 
-    if len(m15_candles) < 300 or len(h4_candles) < 50:
-        return {"error": "Need at least 300 M15 candles and 50 H4 candles."}
+    if len(m15_candles) < 300 or len(h4_candles) < 250:
+        return {"error": "Need at least 300 M15 candles and 250 H4 candles (EMA200 warmup)."}
 
     # Calculate full indicator series
     m15_series = get_full_series(m15_candles)
@@ -65,9 +65,9 @@ def run_backtest(m15_candles: pd.DataFrame, h4_candles: pd.DataFrame,
         if any(v is None for v in [m15_ema50, m15_atr, m15_rsi]):
             continue
 
-        # Find corresponding H4 candle
+        # Find corresponding H4 candle — require 250 H4 bars warmup so EMA200 is valid
         h4_idx = _find_h4_index(h4_candles, ts)
-        if h4_idx is None or h4_idx < 50:
+        if h4_idx is None or h4_idx < 250:
             continue
 
         h4_ema50 = _safe_get(h4_series["ema_50"], h4_idx)
