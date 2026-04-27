@@ -34,7 +34,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# TEST MODE — set True to fire an unconditional BUY on every H1 candle close.
+# TEST MODE — set True to fire an unconditional BUY on every M15 candle close.
 # Bypasses all strategy/session/news/cooldown filters so you can verify the
 # full order-execution pipeline on a demo account within one hour.
 # Set back to False once execution is confirmed working.

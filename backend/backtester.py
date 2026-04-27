@@ -233,9 +233,9 @@ def _safe_get(series, idx):
     return float(val) if pd.notna(val) else None
 
 
-def _find_h4_index(h4_candles: pd.DataFrame, h1_timestamp) -> int | None:
-    """Find the H4 candle that corresponds to (or is just before) the H1 timestamp."""
-    mask = h4_candles["timestamp"] <= h1_timestamp
+def _find_h4_index(h4_candles: pd.DataFrame, m15_timestamp) -> int | None:
+    """Find the H4 candle that corresponds to (or is just before) the M15 timestamp."""
+    mask = h4_candles["timestamp"] <= m15_timestamp
     if mask.any():
         return mask.values.nonzero()[0][-1]
     return None
