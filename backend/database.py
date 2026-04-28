@@ -149,10 +149,18 @@ async def update_trade_exit(trade_id: int, data: dict):
 
 
 async def get_last_n_trades(n: int = 5) -> list[dict]:
+    """
+    Return the last N CLOSED trades (exit_timestamp IS NOT NULL).
+    Trades with null exit_timestamp are abandoned/crashed records and
+    are excluded so the AI doesn't mistake them for open positions.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM trade_log ORDER BY id DESC LIMIT ?", (n,)
+            "SELECT * FROM trade_log "
+            "WHERE exit_timestamp IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (n,),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

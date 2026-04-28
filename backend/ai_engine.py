@@ -179,6 +179,14 @@ class AIEngine:
 
 {json.dumps(data_packet, indent=2, default=str)}
 
+IMPORTANT — read carefully before deciding:
+- "open_positions" and "open_positions_count" are the AUTHORITATIVE source
+  of currently open trades. They are pulled live from MT5 just now.
+- If "open_positions_count" is 0, there are NO open positions — full stop.
+- "last_5_closed_trades" is historical context only. Every entry there has
+  already been closed. Do NOT treat any item in that list as an open trade,
+  regardless of what its other fields look like.
+
 Analyze this data according to the Phase 5 strategy rules and provide your trading decision."""
 
         try:
@@ -352,9 +360,10 @@ Analyze this data according to the Phase 5 strategy rules and provide your tradi
             "rsi_zone": rsi_zone,
             "account": account,
             "open_positions": positions,
+            "open_positions_count": len(positions or []),
             "upcoming_events": upcoming_events,
             "current_session": session,
-            "last_5_trades": last_trades,
+            "last_5_closed_trades": last_trades,  # historical context only — already exited
             "risk_per_trade_pct": risk_pct,
             "max_lot_calculated": max_lot,
         }
