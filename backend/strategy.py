@@ -1,6 +1,30 @@
 """Strategy rules: trend identification, entry signals, SL/TP, filters.
 
 # =============================================================================
+# PHASE 5 STRATEGY (April 2026)  — current
+# =============================================================================
+# Reaction to Phase 4 loss pattern (BUYs in sustained downtrends, tight SLs
+# overspending balance per loss). Six changes vs Phase 4:
+#
+#   1. H4 TREND FILTER RESTORED
+#        - BUY blocked if H4 trend == "downtrend"
+#        - SELL blocked if H4 trend == "uptrend"
+#        - Both still allowed in "range"
+#   2. TAKE-PROFIT: 2.5×ATR → 1.0×ATR  (frequent small wins)
+#   3. STOP-LOSS:   0.75×ATR → 1.5×ATR (smaller lots per fixed risk %)
+#        Net R:R changes from 1:3.3 → 1.5:1 (≈ 1:0.67) — intentional
+#   4. RISK PER TRADE default: 5.0% → 2.5% (Settings slider default also)
+#   5. AI CONFIDENCE THRESHOLD: 45% → 65%
+#   6. SINGLE-POSITION LOCK: any open position blocks BOTH new BUY and new
+#        SELL signals (was per-direction).
+#
+# Unchanged from Phase 4: M15 entry timeframe, EMA50 1.5% proximity, RSI
+# zones (25-65 buy / 35-75 sell), no session filter, cooldown disabled,
+# trailing stop activation logic.
+# =============================================================================
+#
+# (legacy header below — kept for context only)
+# =============================================================================
 # DUAL-MODE STRATEGY (April 2026)
 # =============================================================================
 #
@@ -79,8 +103,9 @@ def get_market_mode(trend: str) -> str:
 
 
 def get_confidence_threshold(mode: str) -> int:
-    """Get minimum confidence threshold. Phase 3: flat 45% regardless of mode."""
-    return 45
+    """Get minimum confidence threshold. Phase 5: flat 65% (was 45% in Phase 4)."""
+    # PHASE 4 — REPLACED: return 45
+    return 65
 
 
 # =============================================================================
@@ -236,18 +261,21 @@ def get_test_signal() -> dict:
 
 
 # =============================================================================
-# STRATEGY (Phase 4 — Max Risk Demo)
+# STRATEGY (Phase 4 — Max Risk Demo)  [PHASE 4 — REPLACED by Phase 5]
 # =============================================================================
-# Phase 3 → Phase 4 changes:
+# Phase 3 → Phase 4 changes (kept for rollback reference):
 #   - Risk per trade: 5% default, cap raised to 10%
 #   - Trend filter: REMOVED — BUY/SELL allowed in any H4 trend/range condition
+#                   [PHASE 4 — REPLACED: trend filter restored in Phase 5]
 #   - SL: 0.75× ATR (was 1.5×), TP: 2.5× ATR unchanged — R:R ≈ 1:3.3
+#                   [PHASE 4 — REPLACED: SL=1.5×ATR, TP=1.0×ATR in Phase 5]
 #   - SL-hit cooldown: REMOVED — re-enter immediately after SL hit
 #   - Consecutive-loss pause: REMOVED — bot never pauses for losses
 #   - Session filter: still removed (removed in Phase 3)
 #   - EMA50 proximity: 1.5% (unchanged from Phase 3)
 #   - RSI zones: 25-65 buy / 35-75 sell (unchanged from Phase 3)
 #   - AI confidence threshold: 45% flat (unchanged from Phase 3)
+#                   [PHASE 4 — REPLACED: 65% in Phase 5]
 
 def check_ema50_proximity(current_close: float, ema50: float) -> bool:
     """Price within 1.5% of H1 EMA50 (Phase 3 — widened from 0.5%)."""
@@ -259,11 +287,20 @@ def check_ema50_proximity(current_close: float, ema50: float) -> bool:
 def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
                      news_clear: bool, positions: list | None = None) -> dict:
     """
-    BUY conditions (Phase 4 — no trend filter).
+    BUY conditions (Phase 5 — H4 trend filter restored, single-position lock).
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
-    H4 trend is passed through for context/logging only — never blocks a trade.
     """
     mode = get_market_mode(h4_trend)
+
+    # PHASE 5 — H4 trend filter (restored): block BUYs against a downtrend
+    if h4_trend == "downtrend":
+        return {
+            "signal": False,
+            "reasons": ["H4 trend is downtrend — BUY blocked"],
+            "mode": mode,
+            "checks": {},
+        }
+
     ema50 = h1_indicators.get("ema_50")
     rsi = h1_indicators.get("rsi_14")
     close = h1_indicators.get("current_close")
@@ -273,11 +310,15 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
 
     ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
+    # PHASE 5 — single-position lock (any open position blocks new entries)
+    no_open_position = not (positions or [])
+
     checks = {
-        "rsi_ok":      25 <= rsi <= 65,
-        "ema50_ok":    ema50_dist_pct <= 1.5,
-        "news_ok":     news_clear,
-        "no_dup_long": not any(p.get("direction") == "buy" for p in (positions or [])),
+        "rsi_ok":           25 <= rsi <= 65,
+        "ema50_ok":         ema50_dist_pct <= 1.5,
+        "news_ok":          news_clear,
+        "no_open_position": no_open_position,
+        # PHASE 4 — REPLACED: "no_dup_long": not any(p.get("direction") == "buy" for p in (positions or [])),
     }
 
     reasons = []
@@ -287,8 +328,8 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
         reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
-    if not checks["no_dup_long"]:
-        reasons.append("Open BUY position already exists")
+    if not checks["no_open_position"]:
+        reasons.append("An open position already exists — only one trade at a time.")
 
     if reasons:
         return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}
@@ -298,11 +339,20 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
 def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
                       news_clear: bool, positions: list | None = None) -> dict:
     """
-    SELL conditions (Phase 4 — no trend filter).
+    SELL conditions (Phase 5 — H4 trend filter restored, single-position lock).
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
-    H4 trend is passed through for context/logging only — never blocks a trade.
     """
     mode = get_market_mode(h4_trend)
+
+    # PHASE 5 — H4 trend filter (restored): block SELLs against an uptrend
+    if h4_trend == "uptrend":
+        return {
+            "signal": False,
+            "reasons": ["H4 trend is uptrend — SELL blocked"],
+            "mode": mode,
+            "checks": {},
+        }
+
     ema50 = h1_indicators.get("ema_50")
     rsi = h1_indicators.get("rsi_14")
     close = h1_indicators.get("current_close")
@@ -312,11 +362,15 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
 
     ema50_dist_pct = abs(close - ema50) / ema50 * 100
 
+    # PHASE 5 — single-position lock (any open position blocks new entries)
+    no_open_position = not (positions or [])
+
     checks = {
-        "rsi_ok":       35 <= rsi <= 75,
-        "ema50_ok":     ema50_dist_pct <= 1.5,
-        "news_ok":      news_clear,
-        "no_dup_short": not any(p.get("direction") == "sell" for p in (positions or [])),
+        "rsi_ok":           35 <= rsi <= 75,
+        "ema50_ok":         ema50_dist_pct <= 1.5,
+        "news_ok":          news_clear,
+        "no_open_position": no_open_position,
+        # PHASE 4 — REPLACED: "no_dup_short": not any(p.get("direction") == "sell" for p in (positions or [])),
     }
 
     reasons = []
@@ -326,8 +380,8 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
         reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
-    if not checks["no_dup_short"]:
-        reasons.append("Open SELL position already exists")
+    if not checks["no_open_position"]:
+        reasons.append("An open position already exists — only one trade at a time.")
 
     if reasons:
         return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}
@@ -340,9 +394,16 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
 
 def calculate_sl_tp(direction: str, entry_price: float, atr: float,
                     ema50: float) -> dict:
-    """Calculate stop-loss and take-profit levels. Phase 4: SL=0.75×ATR, TP=2.5×ATR (R:R ≈ 1:3.3)."""
-    sl_distance = 0.75 * atr
-    tp_distance = 2.5 * atr
+    """
+    Calculate stop-loss and take-profit levels.
+    Phase 5: SL = 1.5×ATR, TP = 1.0×ATR — frequent small wins, smaller lots.
+    Net R:R ≈ 1.5:1 (≈ 1:0.67). Win rate must exceed ~60% to be profitable.
+    """
+    # PHASE 4 — REPLACED:
+    # sl_distance = 0.75 * atr   # tight stop for high-frequency
+    # tp_distance = 2.5  * atr   # R:R ≈ 1:3.3
+    sl_distance = 1.5 * atr
+    tp_distance = 1.0 * atr
 
     if direction == "buy":
         sl = entry_price - sl_distance

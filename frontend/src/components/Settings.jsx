@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 
 export default function Settings({ open, onSave, onStart, onStop, botRunning, connected, onBacktest }) {
-  const [risk, setRisk] = useState(5);
+  // PHASE 4 — REPLACED: const [risk, setRisk] = useState(5);
+  const [risk, setRisk] = useState(2.5);  // Phase 5 default
 
   const handleSave = () => {
     onSave({ risk_per_trade_pct: risk });

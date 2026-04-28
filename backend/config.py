@@ -28,7 +28,8 @@ class BotConfig(BaseModel):
     mt5_password: str = ""
     mt5_server: str = ""
     symbol: str = "XAUEUR"
-    risk_per_trade_pct: float = 5.0
+    # PHASE 4 — REPLACED: risk_per_trade_pct: float = 5.0
+    risk_per_trade_pct: float = 2.5  # Phase 5 — halved to reduce per-loss EUR cost
     # lot_size_mode is always "auto" — approval flow removed
     # max_concurrent_positions is always 1
     # Internal state

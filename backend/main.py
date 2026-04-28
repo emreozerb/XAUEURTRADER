@@ -719,7 +719,8 @@ async def _run_analysis_cycle_inner(m15_candles):
     ai_reason_short = (ai_result.get("reasoning") or "").strip().replace("\n", " ")[:200]
 
     # Handle AI actions
-    MIN_CONFIDENCE = 45  # Phase 3 — lowered from 60%, flat regardless of mode/session
+    # PHASE 4 — REPLACED: MIN_CONFIDENCE = 45
+    MIN_CONFIDENCE = 65  # Phase 5 — raised from 45 to require stronger conviction
 
     logger.info(
         f"AI VERDICT | strategy_signal={signal_direction.upper()} → "
