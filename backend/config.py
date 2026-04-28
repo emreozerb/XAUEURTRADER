@@ -30,6 +30,16 @@ class BotConfig(BaseModel):
     symbol: str = "XAUEUR"
     # PHASE 4 — REPLACED: risk_per_trade_pct: float = 5.0
     risk_per_trade_pct: float = 2.5  # Phase 5 — halved to reduce per-loss EUR cost
+    # PHASE 5 — minimum lot floor: when risk-based calc would produce a very
+    # small lot (broker min is usually 0.01), bump up to this floor so the
+    # trade is meaningful. Setting this above the risk-based result means the
+    # trade exceeds the configured risk_per_trade_pct — logged when it happens.
+    # Set to 0.0 to disable (use raw broker minimum).
+    min_trade_lot_floor: float = 0.10
+    # PHASE 5 — intra-candle re-analysis cadence (seconds). When a position is
+    # open, the analysis cycle will fire this often (in addition to M15 candle
+    # closes) to let the AI re-evaluate the exit. Set 0 to disable.
+    intra_candle_analysis_sec: int = 90
     # lot_size_mode is always "auto" — approval flow removed
     # max_concurrent_positions is always 1
     # Internal state

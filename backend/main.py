@@ -395,8 +395,14 @@ async def websocket_endpoint(websocket: WebSocket):
 # ─── Background loops ──────────────────────────────────────────────
 
 async def _analysis_loop():
-    """Main analysis loop — triggers every M15 candle close."""
+    """
+    Main analysis loop. Triggers in two modes:
+      - On every M15 candle close (full re-evaluation, can open trades)
+      - PHASE 5: every `intra_candle_analysis_sec` while a position is open
+        (lets AI reconsider exit / trailing stop without waiting 15 min)
+    """
     last_candle_time = None
+    last_intra_analysis = None  # datetime of most recent intra-candle cycle
     me = asyncio.current_task()
     logger.info("Analysis loop started.")
 
@@ -439,11 +445,33 @@ async def _analysis_loop():
                 continue
 
             current_candle_time = m15_candles["timestamp"].iloc[-1]
-            if last_candle_time is not None and current_candle_time <= last_candle_time:
-                continue  # No new candle
+            new_candle = (last_candle_time is None) or (current_candle_time > last_candle_time)
 
-            last_candle_time = current_candle_time
-            logger.info(f"New M15 candle detected: {current_candle_time}")
+            # PHASE 5 — intra-candle re-analysis when a position is open
+            now_utc = datetime.now(timezone.utc)
+            intra_due = False
+            if not new_candle and bot_config.intra_candle_analysis_sec > 0:
+                positions_quick = mt5_connector.get_positions() or []
+                if positions_quick:
+                    if last_intra_analysis is None or (
+                        (now_utc - last_intra_analysis).total_seconds()
+                        >= bot_config.intra_candle_analysis_sec
+                    ):
+                        intra_due = True
+
+            if not new_candle and not intra_due:
+                continue  # nothing to do this tick
+
+            if new_candle:
+                last_candle_time = current_candle_time
+                logger.info(f"New M15 candle detected: {current_candle_time}")
+            else:
+                logger.info(
+                    f"Intra-candle re-analysis (position open) — "
+                    f"last_run={last_intra_analysis} interval={bot_config.intra_candle_analysis_sec}s"
+                )
+
+            last_intra_analysis = now_utc
 
             # Run analysis
             await _run_analysis_cycle(m15_candles)
@@ -759,14 +787,21 @@ async def _run_analysis_cycle_inner(m15_candles):
         sl = ai_result.get("stop_loss") or sl_tp["stop_loss"]
         tp = ai_result.get("take_profit") or sl_tp["take_profit"]
 
-        # Calculate lot size
+        # Calculate lot size — with Phase 5 minimum-lot floor
         lot_calc = risk_manager.calculate_lot_size(
             account_balance=account["balance"],
             free_margin=account["free_margin"],
             risk_pct=bot_config.validate_risk(),
             sl_distance=abs(entry_price - sl),
             symbol_info=mt5_connector.symbol_info or {},
+            min_trade_lot_floor=bot_config.min_trade_lot_floor,
         )
+        if lot_calc.get("floor_applied"):
+            await log_and_alert(
+                f"Lot floor applied — actual risk {lot_calc.get('risk_pct')}% exceeds "
+                f"configured {bot_config.validate_risk()}% (lot bumped to {lot_calc['lot_size']}).",
+                "info", "risk"
+            )
 
         if not lot_calc["valid"]:
             await log_analysis({**analysis_data, "executed": 0, "skipped_reason": lot_calc["error"]})

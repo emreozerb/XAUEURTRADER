@@ -11,10 +11,16 @@ class RiskManager:
 
     def calculate_lot_size(self, account_balance: float, free_margin: float,
                           risk_pct: float, sl_distance: float,
-                          symbol_info: dict) -> dict:
+                          symbol_info: dict,
+                          min_trade_lot_floor: float = 0.0) -> dict:
         """
         Calculate recommended lot size based on risk parameters.
         Returns lot size and risk details.
+
+        min_trade_lot_floor: optional Phase 5 floor — when risk-based lot
+        falls below this (but above broker min), bump up to this floor.
+        Result will exceed the configured risk_pct; reported as
+        floor_applied=True for caller logging.
         """
         # Cap risk at 10% (Phase 4 — raised from 5%)
         risk_pct = min(risk_pct, 10.0)
@@ -43,6 +49,24 @@ class RiskManager:
         # Round DOWN to nearest lot step
         lot = int(raw_lot / lot_step) * lot_step
         lot = round(lot, 2)
+
+        # PHASE 5 — minimum trade lot floor (opt-in via min_trade_lot_floor)
+        floor_applied = False
+        if min_trade_lot_floor > 0 and lot < min_trade_lot_floor and min_trade_lot_floor >= min_lot:
+            logger.info(
+                f"[lot] Risk-based lot {lot} below configured floor {min_trade_lot_floor} — "
+                f"bumping up. This will EXCEED configured risk of {risk_pct}%."
+            )
+            lot = round(min_trade_lot_floor, 2)
+            floor_applied = True
+
+        # Diagnostic log so we can always tell why the lot came out the way it did
+        logger.info(
+            f"[lot calc] balance={account_balance:.2f} risk_pct={risk_pct}% "
+            f"risk_eur={risk_amount:.2f} | sl_dist={sl_distance:.5f} tick={tick_size} "
+            f"sl_pips={sl_pips:.1f} pip_val/lot={pip_value_per_lot} | "
+            f"raw_lot={raw_lot:.4f} -> final_lot={lot} (broker_min={min_lot}, floor={min_trade_lot_floor}, applied={floor_applied})"
+        )
 
         # Check minimum lot
         if lot < min_lot:
@@ -83,6 +107,7 @@ class RiskManager:
             "risk_pct": round(actual_risk_pct, 2),
             "sl_pips": round(sl_pips, 1),
             "risk_reward": None,  # Set by caller
+            "floor_applied": floor_applied,
         }
 
     def validate_trade(self, lot_size: float, account_balance: float,
