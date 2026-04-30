@@ -369,14 +369,40 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.trade-table tr.win { background: rgba(0, 210, 106, 0.05); }
-.trade-table tr.loss { background: rgba(255, 71, 87, 0.05); }
+.trade-table tr.win  { background: rgba(0, 210, 106, 0.12); border-left: 3px solid var(--accent-green); }
+.trade-table tr.loss { background: rgba(255, 71, 87, 0.12); border-left: 3px solid var(--accent-red); }
+.trade-table tr.win:hover  { background: rgba(0, 210, 106, 0.20); }
+.trade-table tr.loss:hover { background: rgba(255, 71, 87, 0.20); }
 
 .pnl-positive { color: var(--accent-green); font-weight: 600; }
 .pnl-negative { color: var(--accent-red); font-weight: 600; }
 
 .direction-buy { color: var(--accent-green); font-weight: 700; }
 .direction-sell { color: var(--accent-red); font-weight: 700; }
+
+/* Result badge — explicit WIN / LOSS pill in trade table */
+.result-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.result-badge.win {
+  background: var(--accent-green);
+  color: #0f0f1a;
+}
+.result-badge.loss {
+  background: var(--accent-red);
+  color: #fff;
+}
+.result-badge.open {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
 
 /* Performance footer */
 .performance-footer {

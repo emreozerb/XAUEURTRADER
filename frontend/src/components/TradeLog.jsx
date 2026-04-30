@@ -19,6 +19,7 @@ export default function TradeLog({ trades }) {
         <thead>
           <tr>
             <th>Date</th>
+            <th>Result</th>
             <th>Dir</th>
             <th>Entry</th>
             <th>Exit</th>
@@ -31,37 +32,42 @@ export default function TradeLog({ trades }) {
           </tr>
         </thead>
         <tbody>
-          {trades.map(t => (
-            <React.Fragment key={t.id}>
-              <tr className={t.result === 'win' ? 'win' : t.result === 'loss' ? 'loss' : ''}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setExpandedId(expandedId === t.id ? null : t.id)}>
-                <td>{t.entry_timestamp ? new Date(t.entry_timestamp).toLocaleDateString() : '—'}</td>
-                <td className={t.direction === 'buy' ? 'direction-buy' : 'direction-sell'}>
-                  {t.direction?.toUpperCase()}
-                </td>
-                <td>{t.entry_price?.toFixed(2)}</td>
-                <td>{t.exit_price?.toFixed(2) || '—'}</td>
-                <td>{t.stop_loss?.toFixed(2)}</td>
-                <td>{t.lot_size}</td>
-                <td className={t.pips >= 0 ? 'pnl-positive' : 'pnl-negative'}>
-                  {t.pips != null ? (t.pips >= 0 ? '+' : '') + t.pips.toFixed(1) : '—'}
-                </td>
-                <td className={t.pnl_eur >= 0 ? 'pnl-positive' : 'pnl-negative'}>
-                  {t.pnl_eur != null ? (t.pnl_eur >= 0 ? '+' : '') + t.pnl_eur.toFixed(2) : '—'}
-                </td>
-                <td>{t.ai_confidence || '—'}%</td>
-                <td>{t.exit_reason || '—'}</td>
-              </tr>
-              {expandedId === t.id && t.ai_reasoning && (
-                <tr>
-                  <td colSpan={10} style={{ background: 'var(--bg-primary)', padding: 12, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    {t.ai_reasoning}
+          {trades.map(t => {
+            const result = t.result === 'win' ? 'win' : t.result === 'loss' ? 'loss' : 'open';
+            const badgeLabel = result === 'win' ? '✓ Win' : result === 'loss' ? '✗ Loss' : '• Open';
+            return (
+              <React.Fragment key={t.id}>
+                <tr className={result}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setExpandedId(expandedId === t.id ? null : t.id)}>
+                  <td>{t.entry_timestamp ? new Date(t.entry_timestamp).toLocaleDateString() : '—'}</td>
+                  <td><span className={`result-badge ${result}`}>{badgeLabel}</span></td>
+                  <td className={t.direction === 'buy' ? 'direction-buy' : 'direction-sell'}>
+                    {t.direction?.toUpperCase()}
                   </td>
+                  <td>{t.entry_price?.toFixed(2)}</td>
+                  <td>{t.exit_price?.toFixed(2) || '—'}</td>
+                  <td>{t.stop_loss?.toFixed(2)}</td>
+                  <td>{t.lot_size}</td>
+                  <td className={t.pips >= 0 ? 'pnl-positive' : 'pnl-negative'}>
+                    {t.pips != null ? (t.pips >= 0 ? '+' : '') + t.pips.toFixed(1) : '—'}
+                  </td>
+                  <td className={t.pnl_eur >= 0 ? 'pnl-positive' : 'pnl-negative'}>
+                    {t.pnl_eur != null ? (t.pnl_eur >= 0 ? '+' : '') + t.pnl_eur.toFixed(2) : '—'}
+                  </td>
+                  <td>{t.ai_confidence || '—'}%</td>
+                  <td>{t.exit_reason || '—'}</td>
                 </tr>
-              )}
-            </React.Fragment>
-          ))}
+                {expandedId === t.id && t.ai_reasoning && (
+                  <tr>
+                    <td colSpan={11} style={{ background: 'var(--bg-primary)', padding: 12, fontSize: 13, color: 'var(--text-secondary)' }}>
+                      {t.ai_reasoning}
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
