@@ -2,12 +2,18 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
 
 from .config import settings, bot_config
 from .database import (
@@ -390,6 +396,34 @@ async def websocket_endpoint(websocket: WebSocket):
             bot_config.last_user_interaction = datetime.now(timezone.utc).isoformat()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# ─── Static frontend serving ───────────────────────────────────────
+# Mounted AFTER all API + websocket routes so they take priority.
+
+if FRONTEND_BUILD_DIR.exists() and (FRONTEND_BUILD_DIR / "static").exists():
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(FRONTEND_BUILD_DIR / "static")),
+        name="static",
+    )
+
+    _BUILD_ROOT = str(FRONTEND_BUILD_DIR.resolve())
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path:
+            candidate = os.path.normpath(os.path.join(_BUILD_ROOT, full_path))
+            if not (candidate == _BUILD_ROOT or candidate.startswith(_BUILD_ROOT + os.sep)):
+                raise HTTPException(404)
+            if os.path.isfile(candidate):
+                return FileResponse(candidate)
+        return FileResponse(str(FRONTEND_BUILD_DIR / "index.html"))
+else:
+    logger.info(
+        "Frontend build not found — running in API-only mode. "
+        "Run `npm run build` in frontend/ to enable UI serving."
+    )
 
 
 # ─── Background loops ──────────────────────────────────────────────

@@ -12,7 +12,7 @@ import ChartView from './components/ChartView';
 import EventLog from './components/EventLog';
 import LogsTab from './components/LogsTab';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API = process.env.REACT_APP_API_URL || '';
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(() => {
@@ -91,7 +91,16 @@ export default function App() {
   useEffect(() => {
     if (!loggedIn) return;
     const connect = () => {
-      const ws = new WebSocket(`ws://${new URL(API).host}/ws`);
+      let wsUrl;
+      if (API) {
+        const apiUrl = new URL(API);
+        const wsProto = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProto}//${apiUrl.host}/ws`;
+      } else {
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProto}//${window.location.host}/ws`;
+      }
+      const ws = new WebSocket(wsUrl);
       ws.onopen = () => { wsRef.current = ws; };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
