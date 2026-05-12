@@ -71,9 +71,9 @@ TIMEFRAMES:
 
 ENTRY CONDITIONS (all must be met):
 1. EMA50 proximity: price is within 1.5% of M15 EMA50
-2. RSI zone (M15 RSI 14):
-   - BUY:  RSI between 25 and 65
-   - SELL: RSI between 35 and 75
+2. RSI zone (M15 RSI 14) — PHASE 5 tightened:
+   - BUY:  RSI between 30 and 45
+   - SELL: RSI between 55 and 70
 3. No high-impact news within 30 min before / 15 min after (see upcoming_events)
 4. No open position at all — only one trade at a time (BUY or SELL)
 
@@ -96,7 +96,7 @@ CONFIDENCE THRESHOLD: minimum 65% to recommend a trade. Express genuine confiden
 ANALYSIS FRAMEWORK (evaluate each point explicitly):
 1. Is the proposed direction aligned with the H4 trend (uptrend → BUY only, downtrend → SELL only, range → either)?
 2. Is price within 1.5% of M15 EMA50?
-3. Is M15 RSI in the correct zone (25-65 buy / 35-75 sell)?
+3. Is M15 RSI in the correct zone (30-45 buy / 55-70 sell)?
 4. Are any high-impact news events nearby?
 5. Is any position already open? (If yes, no new entry permitted.)
 6. Is the risk-reward acceptable given the win-rate-dependent design (SL 1.5× ATR, TP 1.0× ATR)?
