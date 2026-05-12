@@ -508,6 +508,8 @@ async def _run_analysis_cycle_inner(m15_candles):
 
     # Fetch data
     h4_candles = mt5_connector.get_candles("H4", 250)
+    # PHASE 5 — H1 candles fetched for new H1 EMA50 slope alignment check
+    h1_candles = mt5_connector.get_candles("H1", 100)
     price = mt5_connector.get_current_price()
     account = mt5_connector.get_account_info()
     positions = mt5_connector.get_positions()
@@ -517,6 +519,10 @@ async def _run_analysis_cycle_inner(m15_candles):
         bot_config.bot_status = "running"
         return
     logger.info(f"H4 candles fetched: {len(h4_candles)} (need 250+ for EMA200)")
+    if h1_candles is None:
+        logger.warning("[MT5] Could not fetch H1 candles — MT5 may be temporarily unavailable.")
+        bot_config.bot_status = "running"
+        return
     if price is None:
         logger.warning("[MT5] Could not fetch current price tick — MT5 may be temporarily unavailable.")
         bot_config.bot_status = "running"
@@ -646,8 +652,8 @@ async def _run_analysis_cycle_inner(m15_candles):
         abs(close_p - ema50_m15) / ema50_m15 * 100
         if close_p and ema50_m15 else None
     )
-    buy_chk  = check_buy_signal(m15_ind, trend, session, news_clear, positions)
-    sell_chk = check_sell_signal(m15_ind, trend, session, news_clear, positions)
+    buy_chk  = check_buy_signal(m15_ind, trend, session, news_clear, positions, h1_candles=h1_candles)
+    sell_chk = check_sell_signal(m15_ind, trend, session, news_clear, positions, h1_candles=h1_candles)
 
     def _fmt_checks(chk: dict) -> str:
         return " | ".join(

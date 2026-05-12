@@ -41,6 +41,23 @@ class TradeManager:
         if not validation["valid"]:
             return {"success": False, "error": "; ".join(validation["errors"])}
 
+        # PHASE 5 — final position lock (belt-and-suspenders, fixes stacking race)
+        # The `positions` list above was read at the start of the analysis cycle,
+        # which is several seconds stale because of the AI call. Re-read here
+        # immediately before sending the order so that a freshly-placed trade
+        # from a prior cycle (not yet reflected when this cycle began) still
+        # blocks a duplicate entry.
+        final_positions = mt5_connector.get_positions() or []
+        if final_positions:
+            logger.warning(
+                f"[lock] Execution blocked — {len(final_positions)} position(s) "
+                f"already open: {[p['ticket'] for p in final_positions]}"
+            )
+            return {
+                "success": False,
+                "error": "Position already open — execution blocked by final lock check",
+            }
+
         # Send order
         result = mt5_connector.send_order(direction, lot_size, sl, tp)
         if not result["success"]:
