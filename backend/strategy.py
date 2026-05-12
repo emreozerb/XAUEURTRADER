@@ -62,6 +62,9 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
+import pandas as pd
+import pandas_ta as ta
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,14 +161,23 @@ def check_ema20_proximity(current_close: float, ema20: float) -> bool:
     return distance_pct <= 0.15
 
 
+# PHASE 5 — REPLACED: RSI zones widened in Phase 3 were too permissive.
+# def check_rsi_buy_zone(rsi: float) -> bool:
+#     """RSI between 25 and 65 = buy zone (Phase 3 — widened)."""
+#     return 25 <= rsi <= 65
+#
+# def check_rsi_sell_zone(rsi: float) -> bool:
+#     """RSI between 35 and 75 = sell zone (Phase 3 — widened)."""
+#     return 35 <= rsi <= 75
+
 def check_rsi_buy_zone(rsi: float) -> bool:
-    """RSI between 25 and 65 = buy zone (Phase 3 — widened)."""
-    return 25 <= rsi <= 65
+    """RSI between 30 and 45 = buy zone (Phase 5 — tightened from 25-65)."""
+    return 30 <= rsi <= 45
 
 
 def check_rsi_sell_zone(rsi: float) -> bool:
-    """RSI between 35 and 75 = sell zone (Phase 3 — widened)."""
-    return 35 <= rsi <= 75
+    """RSI between 55 and 70 = sell zone (Phase 5 — tightened from 35-75)."""
+    return 55 <= rsi <= 70
 
 
 def check_macd_turning_positive(macd_hist: float, macd_hist_prev: float) -> bool:
@@ -176,6 +188,103 @@ def check_macd_turning_positive(macd_hist: float, macd_hist_prev: float) -> bool
 def check_macd_turning_negative(macd_hist: float, macd_hist_prev: float) -> bool:
     """MACD histogram turning negative (current < previous)."""
     return macd_hist < macd_hist_prev
+
+
+# =============================================================================
+# PHASE 5 — H1 TREND CONFIRMATION
+# =============================================================================
+# Require the H1 EMA50 slope to agree with the intended trade direction
+# before allowing entry. This is a second-derivative filter on top of the
+# H4 trend gate — it prevents BUY entries while H1 momentum is still
+# rolling over downward (and vice-versa for SELL).
+
+def check_h1_trend_alignment(h1_candles, direction: str, lookback: int = 3) -> dict:
+    """
+    Check if H1 EMA50 slope agrees with the intended trade direction.
+
+    BUY  requires H1 EMA50 rising  (current > value `lookback` candles ago).
+    SELL requires H1 EMA50 falling (current < value `lookback` candles ago).
+
+    Returns {
+        "aligned":    bool,
+        "reason":     str,
+        "ema50_now":  float | None,
+        "ema50_then": float | None,
+    }
+    `aligned=False` is returned if data is insufficient or contains NaN.
+    """
+    if h1_candles is None or len(h1_candles) < 50 + lookback:
+        return {
+            "aligned": False,
+            "reason": (
+                f"Insufficient H1 history for EMA50 slope check "
+                f"(have {0 if h1_candles is None else len(h1_candles)} bars, "
+                f"need {50 + lookback})"
+            ),
+            "ema50_now": None,
+            "ema50_then": None,
+        }
+
+    try:
+        ema50_series = ta.ema(h1_candles["close"], length=50)
+    except Exception as e:
+        return {
+            "aligned": False,
+            "reason": f"H1 EMA50 calc failed: {type(e).__name__}: {e}",
+            "ema50_now": None,
+            "ema50_then": None,
+        }
+
+    if ema50_series is None or len(ema50_series) < lookback + 1:
+        return {
+            "aligned": False,
+            "reason": "H1 EMA50 series too short after computation",
+            "ema50_now": None,
+            "ema50_then": None,
+        }
+
+    ema_now = ema50_series.iloc[-1]
+    ema_then = ema50_series.iloc[-1 - lookback]
+
+    if pd.isna(ema_now) or pd.isna(ema_then):
+        return {
+            "aligned": False,
+            "reason": "H1 EMA50 contains NaN at endpoints",
+            "ema50_now": None,
+            "ema50_then": None,
+        }
+
+    ema_now_f = float(ema_now)
+    ema_then_f = float(ema_then)
+
+    if direction == "buy":
+        aligned = ema_now_f > ema_then_f
+        reason = (
+            f"H1 EMA50 rising ({ema_then_f:.5f} -> {ema_now_f:.5f})"
+            if aligned else
+            f"H1 EMA50 not rising — BUY blocked ({ema_then_f:.5f} -> {ema_now_f:.5f})"
+        )
+    elif direction == "sell":
+        aligned = ema_now_f < ema_then_f
+        reason = (
+            f"H1 EMA50 falling ({ema_then_f:.5f} -> {ema_now_f:.5f})"
+            if aligned else
+            f"H1 EMA50 not falling — SELL blocked ({ema_then_f:.5f} -> {ema_now_f:.5f})"
+        )
+    else:
+        return {
+            "aligned": False,
+            "reason": f"check_h1_trend_alignment: unknown direction {direction!r}",
+            "ema50_now": ema_now_f,
+            "ema50_then": ema_then_f,
+        }
+
+    return {
+        "aligned": aligned,
+        "reason": reason,
+        "ema50_now": ema_now_f,
+        "ema50_then": ema_then_f,
+    }
 
 
 # =============================================================================
@@ -284,10 +393,21 @@ def check_ema50_proximity(current_close: float, ema50: float) -> bool:
     return abs(current_close - ema50) / ema50 * 100 <= 1.5
 
 
+# PHASE 5 — REPLACED: signature now accepts optional h1_candles for H1 trend
+# alignment, RSI buy zone tightened from 25-65 to 30-45.
+# def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
+#                      news_clear: bool, positions: list | None = None) -> dict:
+#     ... (RSI 25-65, no H1 alignment check) ...
+
 def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
-                     news_clear: bool, positions: list | None = None) -> dict:
+                     news_clear: bool, positions: list | None = None,
+                     h1_candles=None) -> dict:
     """
-    BUY conditions (Phase 5 — H4 trend filter restored, single-position lock).
+    BUY conditions (Phase 5 — H4 trend filter, single-position lock,
+    H1 EMA50-slope confirmation, RSI 30-45 tightened zone).
+    `h1_candles` is optional: when None, the H1 alignment check is skipped
+    (keeps backtester backward-compatible). When provided, BUY requires
+    H1 EMA50 to be rising.
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
     """
     mode = get_market_mode(h4_trend)
@@ -313,33 +433,53 @@ def check_buy_signal(h1_indicators: dict, h4_trend: str, session: str,
     # PHASE 5 — single-position lock (any open position blocks new entries)
     no_open_position = not (positions or [])
 
+    # PHASE 5 — H1 trend alignment (optional: only when caller supplies H1 candles)
+    h1_check = None
+    if h1_candles is not None:
+        h1_check = check_h1_trend_alignment(h1_candles, "buy")
+
     checks = {
-        "rsi_ok":           25 <= rsi <= 65,
+        "rsi_ok":           30 <= rsi <= 45,
         "ema50_ok":         ema50_dist_pct <= 1.5,
         "news_ok":          news_clear,
         "no_open_position": no_open_position,
         # PHASE 4 — REPLACED: "no_dup_long": not any(p.get("direction") == "buy" for p in (positions or [])),
     }
+    if h1_check is not None:
+        checks["h1_aligned"] = h1_check["aligned"]
 
     reasons = []
     if not checks["rsi_ok"]:
-        reasons.append(f"RSI {rsi:.1f} outside buy zone 25-65")
+        reasons.append(f"RSI {rsi:.1f} outside buy zone 30-45")
     if not checks["ema50_ok"]:
         reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
     if not checks["no_open_position"]:
         reasons.append("An open position already exists — only one trade at a time.")
+    if h1_check is not None and not h1_check["aligned"]:
+        reasons.append(h1_check["reason"])
 
     if reasons:
         return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}
     return {"signal": True, "reasons": ["All BUY conditions met"], "mode": mode, "checks": checks}
 
 
+# PHASE 5 — REPLACED: signature now accepts optional h1_candles for H1 trend
+# alignment, RSI sell zone tightened from 35-75 to 55-70.
+# def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
+#                       news_clear: bool, positions: list | None = None) -> dict:
+#     ... (RSI 35-75, no H1 alignment check) ...
+
 def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
-                      news_clear: bool, positions: list | None = None) -> dict:
+                      news_clear: bool, positions: list | None = None,
+                      h1_candles=None) -> dict:
     """
-    SELL conditions (Phase 5 — H4 trend filter restored, single-position lock).
+    SELL conditions (Phase 5 — H4 trend filter, single-position lock,
+    H1 EMA50-slope confirmation, RSI 55-70 tightened zone).
+    `h1_candles` is optional: when None, the H1 alignment check is skipped
+    (keeps backtester backward-compatible). When provided, SELL requires
+    H1 EMA50 to be falling.
     Returns {"signal": bool, "reasons": [...], "mode": str, "checks": dict}
     """
     mode = get_market_mode(h4_trend)
@@ -365,23 +505,32 @@ def check_sell_signal(h1_indicators: dict, h4_trend: str, session: str,
     # PHASE 5 — single-position lock (any open position blocks new entries)
     no_open_position = not (positions or [])
 
+    # PHASE 5 — H1 trend alignment (optional: only when caller supplies H1 candles)
+    h1_check = None
+    if h1_candles is not None:
+        h1_check = check_h1_trend_alignment(h1_candles, "sell")
+
     checks = {
-        "rsi_ok":           35 <= rsi <= 75,
+        "rsi_ok":           55 <= rsi <= 70,
         "ema50_ok":         ema50_dist_pct <= 1.5,
         "news_ok":          news_clear,
         "no_open_position": no_open_position,
         # PHASE 4 — REPLACED: "no_dup_short": not any(p.get("direction") == "sell" for p in (positions or [])),
     }
+    if h1_check is not None:
+        checks["h1_aligned"] = h1_check["aligned"]
 
     reasons = []
     if not checks["rsi_ok"]:
-        reasons.append(f"RSI {rsi:.1f} outside sell zone 35-75")
+        reasons.append(f"RSI {rsi:.1f} outside sell zone 55-70")
     if not checks["ema50_ok"]:
         reasons.append(f"Price {ema50_dist_pct:.2f}% from EMA50 (need <= 1.5%)")
     if not checks["news_ok"]:
         reasons.append("High-impact news event nearby")
     if not checks["no_open_position"]:
         reasons.append("An open position already exists — only one trade at a time.")
+    if h1_check is not None and not h1_check["aligned"]:
+        reasons.append(h1_check["reason"])
 
     if reasons:
         return {"signal": False, "reasons": reasons, "mode": mode, "checks": checks}

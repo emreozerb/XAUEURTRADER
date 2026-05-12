@@ -2,12 +2,18 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+FRONTEND_BUILD_DIR = Path(__file__).parent.parent / "frontend" / "build"
 
 from .config import settings, bot_config
 from .database import (
@@ -392,6 +398,34 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+# ─── Static frontend serving ───────────────────────────────────────
+# Mounted AFTER all API + websocket routes so they take priority.
+
+if FRONTEND_BUILD_DIR.exists() and (FRONTEND_BUILD_DIR / "static").exists():
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(FRONTEND_BUILD_DIR / "static")),
+        name="static",
+    )
+
+    _BUILD_ROOT = str(FRONTEND_BUILD_DIR.resolve())
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path:
+            candidate = os.path.normpath(os.path.join(_BUILD_ROOT, full_path))
+            if not (candidate == _BUILD_ROOT or candidate.startswith(_BUILD_ROOT + os.sep)):
+                raise HTTPException(404)
+            if os.path.isfile(candidate):
+                return FileResponse(candidate)
+        return FileResponse(str(FRONTEND_BUILD_DIR / "index.html"))
+else:
+    logger.info(
+        "Frontend build not found — running in API-only mode. "
+        "Run `npm run build` in frontend/ to enable UI serving."
+    )
+
+
 # ─── Background loops ──────────────────────────────────────────────
 
 async def _analysis_loop():
@@ -508,6 +542,7 @@ async def _run_analysis_cycle_inner(m15_candles):
 
     # Fetch data
     h4_candles = mt5_connector.get_candles("H4", 250)
+    h1_candles = mt5_connector.get_candles("H1", 100)  # PHASE 5 — for H1 EMA50 slope check
     price = mt5_connector.get_current_price()
     account = mt5_connector.get_account_info()
     positions = mt5_connector.get_positions()
@@ -517,6 +552,10 @@ async def _run_analysis_cycle_inner(m15_candles):
         bot_config.bot_status = "running"
         return
     logger.info(f"H4 candles fetched: {len(h4_candles)} (need 250+ for EMA200)")
+    if h1_candles is None:
+        logger.warning("[MT5] Could not fetch H1 candles — skipping cycle (H1 alignment check needs them).")
+        bot_config.bot_status = "running"
+        return
     if price is None:
         logger.warning("[MT5] Could not fetch current price tick — MT5 may be temporarily unavailable.")
         bot_config.bot_status = "running"
@@ -646,8 +685,8 @@ async def _run_analysis_cycle_inner(m15_candles):
         abs(close_p - ema50_m15) / ema50_m15 * 100
         if close_p and ema50_m15 else None
     )
-    buy_chk  = check_buy_signal(m15_ind, trend, session, news_clear, positions)
-    sell_chk = check_sell_signal(m15_ind, trend, session, news_clear, positions)
+    buy_chk  = check_buy_signal(m15_ind, trend, session, news_clear, positions, h1_candles=h1_candles)
+    sell_chk = check_sell_signal(m15_ind, trend, session, news_clear, positions, h1_candles=h1_candles)
 
     def _fmt_checks(chk: dict) -> str:
         return " | ".join(

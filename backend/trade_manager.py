@@ -41,6 +41,23 @@ class TradeManager:
         if not validation["valid"]:
             return {"success": False, "error": "; ".join(validation["errors"])}
 
+        # PHASE 5 — final position-lock immediately before send_order.
+        # Re-query MT5 with a FRESH call (not the list captured above) — the
+        # AI call earlier in the cycle can take several seconds, during which
+        # a previous order might have filled. Belt-and-suspenders with the
+        # `no_open_position` checks already in strategy.py.
+        positions_now = mt5_connector.get_positions()
+        if positions_now:
+            tickets = [p.get("ticket") for p in positions_now]
+            logger.warning(
+                f"[lock] Execution blocked — {len(positions_now)} position(s) "
+                f"already open: {tickets}"
+            )
+            return {
+                "success": False,
+                "error": "Position already open — execution blocked by final lock check",
+            }
+
         # Send order
         result = mt5_connector.send_order(direction, lot_size, sl, tp)
         if not result["success"]:
