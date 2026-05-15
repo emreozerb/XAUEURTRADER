@@ -588,14 +588,19 @@ async def _run_analysis_cycle_inner(m15_candles):
         )
         return
 
-    # Inactivity — soft pause for 1 hour if no user interaction in 24h
-    if bot_config.last_user_interaction:
-        last_interact = datetime.fromisoformat(bot_config.last_user_interaction)
-        if last_interact.tzinfo is None:
-            last_interact = last_interact.replace(tzinfo=timezone.utc)
-        if (utc_now - last_interact) > timedelta(hours=24) and bot_config.bot_status != "paused":
-            await soft_pause(1, "No user interaction for 24h", "bot")
-            return
+    # PHASE 5 — DISABLED: inactivity check not appropriate for VPS deployment.
+    # The frontend never sends WebSocket messages, so last_user_interaction
+    # is only updated at bot start. After 24h, this would loop forever:
+    # pause 1h → auto-resume → still 24h+ idle → pause 1h → ... etc.
+    # Bot now runs server-resident; concept of "user walking away" doesn't apply.
+    # # Inactivity — soft pause for 1 hour if no user interaction in 24h
+    # if bot_config.last_user_interaction:
+    #     last_interact = datetime.fromisoformat(bot_config.last_user_interaction)
+    #     if last_interact.tzinfo is None:
+    #         last_interact = last_interact.replace(tzinfo=timezone.utc)
+    #     if (utc_now - last_interact) > timedelta(hours=24) and bot_config.bot_status != "paused":
+    #         await soft_pause(1, "No user interaction for 24h", "bot")
+    #         return
 
     # Margin safety
     if not risk_manager.check_margin_safety(account["free_margin"], account["equity"]):
